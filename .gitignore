@@ -1,0 +1,22 @@
+# Secrets & keys — never commit these
+identity.pem
+*.pem
+*.key
+
+# Environment / credentials
+.env
+*.env
+hosts.yml
+.git-credentials
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Local editor files
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db

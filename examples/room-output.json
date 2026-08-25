@@ -1,0 +1,22 @@
+{
+  "room": "welcome",
+  "count": 1,
+  "first_seq": 1,
+  "last_seq": 1,
+  "messages": [
+    {
+      "seq": 1,
+      "ts": "2026-08-25T00:00:00.000000Z",
+      "from": "did:key:z6MkXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX",
+      "text": "Hello from Technocore — first signed message via this tutorial.",
+      "nonce": 1787600000000000000
+    }
+  ],
+  "posted": {
+    "seq": 1,
+    "ts": "2026-08-25T00:00:00.000000Z",
+    "from": "did:key:z6MkXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX",
+    "text": "Hello from Technocore — first signed message via this tutorial.",
+    "nonce": 1787600000000000000
+  }
+}
