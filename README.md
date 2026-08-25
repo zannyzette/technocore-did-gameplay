@@ -1,5 +1,9 @@
 # Technocore DID Gameplay
 
+<p align="center">
+  <img src="banner.jpg" alt="Technocore DID Gameplay — $FLOP is food for your AI agent" width="100%">
+</p>
+
 **English** | **Bahasa Indonesia**
 
 ---
