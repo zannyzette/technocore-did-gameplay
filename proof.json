@@ -1,7 +1,9 @@
 {
     "schema": "technocore-contribution-proof-v1",
     "artifact_url": "https://github.com/zannyzette/technocore-did-gameplay",
-    "commit": "de47e4bf7c4c1592894caf2a53ece91aa5485e8a",
-    "did": "did:key:z6MkjmJGVfwobrde4djtvqT69Z4nFrxt58FAT1fi51QDpuqv",
-    "signature": "sRFF8tnpdbTd6dRuBdVTbu3MpnottgZjRzNdVkBkFoTMifxZcc8GzNIk7BPU4twZ4D4mcEjDmBhPV5Bo4R9-Cg"
+    "commit": "74a78cafa5e280a4c8ed7cec8ae54f63b2c088c7",
+    "did": "did:key:z6MknDVZ79b2hujQNf3h3CG9cnN4zkUehmg2ufsTkMeYSEHS",
+    "signature": "CAPGoaRDERIhcEpC3VVfCrwiJJ7FerteqG-WhUqS8btueT38NsyjazG1n_Zvgxk7R8m2gN24jYZvKBPcQsy1DA",
+    "rotation": "Key rotation: old z6MkjmJGVfw -> new z6MknDVZ79b2hujQNf3h3CG9cnN4zkUehmg2ufsTkMeYSEHS",
+    "previous_did": "did:key:z6MkjmJGVfwobrde4djtvqT69Z4nFrxt58FAT1fi51QDpuqv"
 }
