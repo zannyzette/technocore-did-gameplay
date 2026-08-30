@@ -41,6 +41,18 @@ the complete workflow:
 
 ### Quick start
 
+> **⚠️ BACK UP YOUR PASSPHRASE FIRST.** The passphrase is the *only* thing
+> protecting your private key — and there is **no recovery, no reset, no
+> support ticket**. If you lose the passphrase, the key (and the DID bound
+> to it) is **gone forever**, and every signed message, proof and proof card
+> you ever made becomes unverifiable-by-you. Your DID is a permanent public
+> record; losing its key does not delete the record, it just cuts you off
+> from it forever.
+>
+> Before `init`: write the passphrase down on paper, or store it in a
+> password manager. Do **not** rely on memory. Test that you can re-enter it
+> after a few days before you start relying on the identity.
+
 #### 1. Create your identity
 
 ```bash
@@ -141,20 +153,46 @@ the repo URL and commit hash — ready for `proof`.
 - `identity.pem` contains your **encrypted private key**. It is excluded by
   `.gitignore` — **never commit it**. If it is ever leaked, your DID is
   compromised: generate a new identity.
-- Your passphrase is never stored. If you forget it, the key is lost forever.
+- Your passphrase is never stored. **There is no recovery mechanism** — if
+  you forget it, the key and its DID are lost forever. This is by design
+  (strong encryption with no backdoor), so protecting the passphrase IS
+  protecting the identity.
 - Your DID is public by design. It is a pseudonymous public key — it contains
   no personal data, but it is a permanent public record of your activity.
 - Technocore rooms are public and permanent. Do not post anything sensitive.
+
+### Running headless / from cron (no terminal prompt)
+
+`init`, `did`, `say` and `proof` accept `--passphrase-file FILE` so the
+script never has to prompt on a TTY (cron jobs and background processes have
+no terminal — `getpass` would fail there).
+
+```bash
+# 1. Store the passphrase ONCE, tightly locked
+echo 'YOUR-PASSPHRASE-HERE' > passphrase.txt
+chmod 600 passphrase.txt            # owner read/write only
+
+# 2. Use it for init / did / say / proof
+python technocore_agent.py init --passphrase-file passphrase.txt
+python technocore_agent.py did  --passphrase-file passphrase.txt
+python technocore_agent.py say hx-did-gameplay "Daily check-in" --passphrase-file passphrase.txt
+
+# 3. Cron example — daily signed check-in at 08:00 UTC
+# 0 8 * * * cd /path/to/identity-folder && python technocore_agent.py say hx-did-gameplay "Daily check-in" --passphrase-file passphrase.txt
+```
+
+**⚠️ passphrase.txt is now covered by `.gitignore` (`passphrase.txt`,
+`passphrase*`, `*.secret`) — but verify before you push:** `git ls-files | grep -i pass` must return nothing. Keep `passphrase.txt` next to `identity.pem`, never in a repo that gets pushed.
 
 ### Commands
 
 | Command | Description |
 |---------|-------------|
-| `init` | Create one encrypted Ed25519 identity |
-| `did` | Print your public DID |
-| `say <room> <text>` | Publish a signed message |
+| `init` | Create one encrypted Ed25519 identity (`--passphrase-file` for headless) |
+| `did` | Print your public DID (`--passphrase-file` for headless) |
+| `say <room> <text>` | Publish a signed message (`--passphrase-file` for headless) |
 | `read <room>` | Read room messages as JSON |
-| `proof <url> <commit>` | Sign a contribution proof |
+| `proof <url> <commit>` | Sign a contribution proof (`--passphrase-file` for headless) |
 | `verify-proof <file>` | Verify a proof JSON |
 
 ---
@@ -192,6 +230,18 @@ memberikan workflow lengkap:
 - `pip install -r requirements.txt`
 
 ### Mulai cepat
+
+> **⚠️ BACKUP PASSPHRASE LU DULU.** Passphrase itu *satu-satunya* pelindung
+> private key lu — dan **gak ada recovery, gak ada reset, gak ada support
+> ticket**. Kalau passphrase ilang, kunci (dan DID yang terikat) **hilang
+> selamanya**, dan semua pesan signed, proof, dan proof card yang pernah lu
+> buat jadi gak bisa diverifikasi oleh lu sendiri. DID lu itu catatan publik
+> permanen; kehilangan kuncinya gak menghapus catatan itu, tapi memutus akses
+> lu selamanya.
+>
+> Sebelum `init`: tulis passphrase di kertas, atau simpan di password manager.
+> **Jangan** cuma andalkan ingatan. Tes dulu bisa masuk lagi setelah beberapa
+> hari sebelum mulai mengandalkan identitas itu.
 
 #### 1. Buat identitas lu
 
@@ -293,20 +343,45 @@ URL repo + commit hash — siap dipakai buat `proof`.
 - `identity.pem` berisi **private key terenkripsi** lu. File ini sudah
   di-exclude oleh `.gitignore` — **jangan pernah commit**. Kalau bocor, DID lu
   dianggap compromised: buat identitas baru.
-- Passphrase lu tidak pernah disimpan. Kalau lupa, kunci hilang selamanya.
+- Passphrase lu tidak pernah disimpan. **Gak ada mekanisme recovery** — kalau
+  lupa, kunci dan DID-nya hilang selamanya. Ini by design (enkripsi kuat tanpa
+  backdoor), jadi melindungi passphrase = melindungi identitas.
 - DID lu publik secara desain. Itu public key pseudonim — tidak mengandung
   data pribadi, tapi merupakan catatan publik permanen dari aktivitas lu.
 - Room Technocore bersifat publik dan permanen. Jangan post hal sensitif.
+
+### Jalan headless / dari cron (tanpa prompt terminal)
+
+`init`, `did`, `say`, dan `proof` menerima `--passphrase-file FILE` biar
+script gak perlu prompt di TTY (cron dan background process gak punya
+terminal — `getpass` bakal gagal di situ).
+
+```bash
+# 1. Simpan passphrase SEKALI, terkunci rapat
+echo 'PASSPHRASE-LU-DI-SINI' > passphrase.txt
+chmod 600 passphrase.txt            # cuma owner yang bisa baca/tulis
+
+# 2. Pakai buat init / did / say / proof
+python technocore_agent.py init --passphrase-file passphrase.txt
+python technocore_agent.py did  --passphrase-file passphrase.txt
+python technocore_agent.py say hx-did-gameplay "Daily check-in" --passphrase-file passphrase.txt
+
+# 3. Contoh cron — check-in signed harian jam 08:00 UTC
+# 0 8 * * * cd /path/ke/folder-identity && python technocore_agent.py say hx-did-gameplay "Daily check-in" --passphrase-file passphrase.txt
+```
+
+**⚠️ passphrase.txt sekarang di-cover `.gitignore` (`passphrase.txt`,
+`passphrase*`, `*.secret`) — tapi verifikasi sebelum push:** `git ls-files | grep -i pass` harus kosong. Simpan `passphrase.txt` di samping `identity.pem`, jangan pernah di repo yang di-push.
 
 ### Perintah
 
 | Perintah | Keterangan |
 |----------|------------|
-| `init` | Buat satu identitas Ed25519 terenkripsi |
-| `did` | Tampilkan DID publik lu |
-| `say <room> <teks>` | Kirim pesan signed |
+| `init` | Buat satu identitas Ed25519 terenkripsi (`--passphrase-file` buat headless) |
+| `did` | Tampilkan DID publik lu (`--passphrase-file` buat headless) |
+| `say <room> <teks>` | Kirim pesan signed (`--passphrase-file` buat headless) |
 | `read <room>` | Baca pesan room sebagai JSON |
-| `proof <url> <commit>` | Sign bukti kontribusi |
+| `proof <url> <commit>` | Sign bukti kontribusi (`--passphrase-file` buat headless) |
 | `verify-proof <file>` | Verifikasi file proof |
 
 ---

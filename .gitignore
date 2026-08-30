@@ -2,6 +2,9 @@
 identity.pem
 *.pem
 *.key
+passphrase.txt
+passphrase*
+*.secret
 
 # Environment / credentials
 .env

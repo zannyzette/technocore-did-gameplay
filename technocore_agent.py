@@ -35,7 +35,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import (
     Ed25519PublicKey,
 )
 
-APP_VERSION = "1.0.0"
+APP_VERSION = "1.1.0"
 BASE_URL = "https://technocore.chat"
 KEY_PATH = Path("identity.pem")
 TIMEOUT = 20.0
@@ -163,16 +163,18 @@ def message_payload(room: str, nonce, text: str):
 # ---------------------------------------------------------------------------
 
 
-def create_identity(path: Path = KEY_PATH) -> str:
+def create_identity(path: Path = KEY_PATH, passphrase: str | None = None) -> str:
     """Generate an encrypted Ed25519 key. Refuses to overwrite."""
     if path.exists():
         raise IdentityError(f"identity already exists: {path}")
-    passphrase = getpass.getpass("New identity passphrase (12+ chars): ")
+    if passphrase is None:
+        passphrase = getpass.getpass("New identity passphrase (12+ chars): ")
     if len(passphrase) < 12:
         raise IdentityError("passphrase must be at least 12 characters")
-    confirm = getpass.getpass("Confirm passphrase: ")
-    if passphrase != confirm:
-        raise IdentityError("passphrases do not match")
+    if passphrase is None:
+        confirm = getpass.getpass("Confirm passphrase: ")
+        if passphrase != confirm:
+            raise IdentityError("passphrases do not match")
     pk = Ed25519PrivateKey.generate()
     private_bytes = pk.private_bytes(
         serialization.Encoding.PEM,
@@ -185,14 +187,15 @@ def create_identity(path: Path = KEY_PATH) -> str:
     return did_from_private_key(pk)
 
 
-def load_identity(path: Path = KEY_PATH) -> Ed25519PrivateKey:
+def load_identity(path: Path = KEY_PATH, passphrase: str | None = None) -> Ed25519PrivateKey:
     if not path.exists():
         raise IdentityError(f"identity not found: {path} — run 'init' first")
     private_bytes = path.read_bytes()
     try:
         return serialization.load_pem_private_key(private_bytes, password=None)
     except TypeError:
-        passphrase = getpass.getpass(f"Passphrase for {path}: ")
+        if passphrase is None:
+            passphrase = getpass.getpass(f"Passphrase for {path}: ")
         return serialization.load_pem_private_key(private_bytes, password=passphrase.encode())
 
 
@@ -285,13 +288,21 @@ def main(argv=None) -> int:
     parser.add_argument("--version", action="version", version=APP_VERSION)
     sub = parser.add_subparsers(dest="command", required=True)
 
-    sub.add_parser("init", help="create one Ed25519 DID identity")
-    sub.add_parser("did", help="print the public DID")
+    init = sub.add_parser("init", help="create one Ed25519 DID identity")
+    init.add_argument("--passphrase-file", type=Path,
+                      help="read passphrase from FILE (headless/cron). WARNING: store chmod 600, never commit!")
+
+    did = sub.add_parser("did", help="print the public DID")
+    did.add_argument("--key", type=Path, default=KEY_PATH)
+    did.add_argument("--passphrase-file", type=Path,
+                     help="read passphrase from FILE (headless/cron). WARNING: store chmod 600, never commit!")
 
     say = sub.add_parser("say", help="publish one signed room message")
     say.add_argument("room")
     say.add_argument("text")
     say.add_argument("--key", type=Path, default=KEY_PATH)
+    say.add_argument("--passphrase-file", type=Path,
+                     help="read passphrase from FILE (headless/cron). WARNING: store chmod 600, never commit!")
 
     read = sub.add_parser("read", help="read room data as JSON")
     read.add_argument("room")
@@ -303,6 +314,8 @@ def main(argv=None) -> int:
     proof.add_argument("commit")
     proof.add_argument("--key", type=Path, default=KEY_PATH)
     proof.add_argument("--output", type=Path, default=Path("proof.json"))
+    proof.add_argument("--passphrase-file", type=Path,
+                       help="read passphrase from FILE (headless/cron). WARNING: store chmod 600, never commit!")
 
     vp = sub.add_parser("verify-proof", help="verify public proof JSON")
     vp.add_argument("proof_file", type=Path)
@@ -310,22 +323,27 @@ def main(argv=None) -> int:
     args = parser.parse_args(argv)
 
     try:
+        pf = args.passphrase_file if hasattr(args, 'passphrase_file') and args.passphrase_file else None
+        pphrase = pf.read_text().strip() if pf else None
+
         if args.command == "init":
-            did = create_identity()
+            did = create_identity(passphrase=pphrase)
             print(did)
             print(f"identity saved to {KEY_PATH} (encrypted, chmod 600)")
+            if pf:
+                print(f"passphrase read from {pf} — keep this file safe and never commit it!")
         elif args.command == "did":
-            pk = load_identity()
+            pk = load_identity(args.key, passphrase=pphrase)
             print(did_from_private_key(pk))
         elif args.command == "say":
-            pk = load_identity(args.key)
+            pk = load_identity(args.key, passphrase=pphrase)
             result = post_signed_message(pk, args.room, args.text)
             print(json.dumps(result, indent=2))
         elif args.command == "read":
             result = read_room(args.room, limit=args.limit, since=args.since)
             print(json.dumps(result, indent=2))
         elif args.command == "proof":
-            pk = load_identity(args.key)
+            pk = load_identity(args.key, passphrase=pphrase)
             proof = contribution_proof(pk, args.artifact_url, args.commit)
             args.output.write_text(json.dumps(proof, indent=4) + "\n")
             print(args.output)
