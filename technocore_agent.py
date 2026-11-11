@@ -38,7 +38,11 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import (
 
 APP_VERSION = "1.1.0"
 BASE_URL = "https://technocore.chat"
-KEY_PATH = Path.home() / ".technocore" / "identity.pem"
+_LOCAL_KEY = Path("identity.pem")
+_GLOBAL_KEY = Path.home() / ".technocore" / "identity.pem"
+# Backwards compatible: an existing ./identity.pem still wins, so older setups
+# (and existing cron jobs) keep working. New installs land in ~/.technocore/.
+KEY_PATH = _LOCAL_KEY if _LOCAL_KEY.exists() else _GLOBAL_KEY
 TIMEOUT = 20.0
 MAX_BODY = 1_000_000
 MAX_DID_CHARS = 100

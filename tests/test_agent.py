@@ -125,3 +125,16 @@ def test_staged_secrets_detected(tmp_path):
 def test_redact_token():
     assert "ghp_" not in gu.redact("url https://x-access-token:ghp_abcdefgh12345678@github.com/a/b")
     assert "x-access" not in gu.redact("https://x-access-token:abc@github.com/a/b")
+
+
+def test_key_path_prefers_existing_local(tmp_path, monkeypatch):
+    """Older setups keep ./identity.pem; new installs go to ~/.technocore/."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(ta, "_LOCAL_KEY", tmp_path / "identity.pem")
+    monkeypatch.setattr(ta, "_GLOBAL_KEY", tmp_path / "home" / ".technocore" / "identity.pem")
+    assert not (tmp_path / "identity.pem").exists()
+    resolved = ta._LOCAL_KEY if ta._LOCAL_KEY.exists() else ta._GLOBAL_KEY
+    assert resolved == tmp_path / "home" / ".technocore" / "identity.pem"
+    (tmp_path / "identity.pem").write_text("x")
+    resolved = ta._LOCAL_KEY if ta._LOCAL_KEY.exists() else ta._GLOBAL_KEY
+    assert resolved == tmp_path / "identity.pem"
