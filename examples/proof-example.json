@@ -1,7 +1,10 @@
 {
-    "schema": "technocore-contribution-proof-v1",
     "artifact_url": "https://github.com/USERNAME/technocore-did-gameplay",
     "commit": "0000000000000000000000000000000000000000",
     "did": "did:key:z6MkXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX",
+    "expires_at": 1795376000,
+    "issued_at": 1787600000,
+    "nonce": "0123456789abcdef0123456789abcdef",
+    "schema": "technocore-contribution-proof-v2",
     "signature": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
 }

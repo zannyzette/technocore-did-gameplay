@@ -1,2 +1,3 @@
-pytest>=8
-cryptography>=42.0,<51
+# Development / test dependencies (not needed to run the agent itself).
+-r requirements.lock
+pytest==9.2.0

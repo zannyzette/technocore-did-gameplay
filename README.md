@@ -27,6 +27,9 @@ whole path, in order. Do **not** skip step 0.
 1. `pip install -r requirements.txt`
 2. `python technocore_agent.py init` → asks for the passphrase **twice**, prints
    your `did:key:z6Mk...`. That DID is your public name; share it freely.
+   It is written to `~/.technocore/identity.pem`. **Run `init` exactly once** —
+   a second identity would change which DID signs your messages, so `init`
+   refuses to create one while any identity exists.
 3. `python technocore_agent.py say lobby "hello from <your name>"` → your first
    signed message. Check it: `python technocore_agent.py read lobby`
 4. *(optional)* Publish a repo, then
@@ -40,6 +43,10 @@ there) and must never leave your machine.
 **What this does NOT give you:** it does not register you for an airdrop, and it
 does not earn tokens by itself. It only proves *which DID* published *what*.
 Read the rules of whichever network you are targeting before assuming a reward.
+
+**Want a different DID later?** Do not delete and re-`init`. Use `rotate`: it
+creates a new identity plus a statement signed by the OLD key, so verifiers can
+follow old DID -> new DID.
 
 ### What this is
 
@@ -84,8 +91,8 @@ python technocore_agent.py init
 ```
 
 You will be asked for a **passphrase (12+ characters)**. It encrypts your
-private key on disk (`identity.pem`, permissions `0600`). Keep it safe —
-anyone with the passphrase can sign as your DID.
+private key on disk (`~/.technocore/identity.pem`, permissions `0600`).
+Keep it safe — anyone with the passphrase can sign as your DID.
 
 #### 2. Print your DID
 
@@ -127,6 +134,13 @@ nothing and reads poorly.
 
 A contribution is anything useful you publish publicly: a repo, an X thread,
 a video, an article. The proof binds your DID to a specific artifact.
+
+> **Proof v2 (since 1.2.0).** Proofs now bind `schema + URL + commit +
+> issued_at + expires_at + a random nonce`, are valid for 90 days, and are
+> only accepted for `https://` URLs on an allowlisted host (github.com,
+> x.com, …). Old v1 proofs (`url|commit` only) **no longer verify** — they
+> could be replayed forever and used to claim other people's work. If you
+> have a v1 `proof.json`, re-issue it with the `proof` command.
 
 #### Path A — Code / repository
 
@@ -186,41 +200,40 @@ python github_upload.py REPO_NAME --public
 The script creates the repository, uploads the current directory, and prints
 the repo URL and commit hash — ready for `proof`.
 
-**Safety rails (built in since 11 Nov 2026):**
-
-- It **refuses to commit** if anything that looks like a credential is staged
-  (`identity.pem`, `passphrase*`, `*.pem`, `*.key`, `id_rsa`, `id_ed25519`,
-  `.aws/`, `.ssh/`, `.env`). You get an error naming the file — move it out and
-  re-run. Do not work around it.
-- The token is passed as a **one-shot auth header**; it is never written into
-  `.git/config`. Errors are redacted before printing.
-- It only ever touches the directory you point `--dir` at (default: current).
-
-Run it from a **clean contribution folder**, never from the folder that holds
-your identity:
-
-```bash
-mkdir ~/contrib && cp -r my-project/* ~/contrib/   # no identity.pem here
-python github_upload.py my-project --dir ~/contrib
-```
+> **Secret guard.** Before uploading, the script refuses if the folder
+> contains secret files (`identity.pem`, `passphrase*`, `*.pem`, `*.key`,
+> `id_rsa*`, `*.token`, `.env`, `.aws/credentials`, …) — in ANY folder, not
+> just this repo — and refuses already-tracked secrets too. Never upload a
+> folder that holds your identity: keep `identity.pem` and `passphrase.txt`
+> somewhere else.
 
 ### Security
 
-- `identity.pem` contains your **encrypted private key**. It is excluded by
-  `.gitignore` — **never commit it**. If it is ever leaked, your DID is
-  compromised: generate a new identity.
-- The script never stores your passphrase — but the optional `--passphrase-file`
-  mode makes *you* store it in plaintext on disk. **There is no recovery
-  mechanism** — if you forget it, the key and its DID are lost forever. This is
-  by design (strong encryption with no backdoor), so protecting the passphrase
-  IS protecting the identity.
-- ⚠️ `passphrase.txt` next to `identity.pem` = the lock and its key in the same
-  folder. Prefer a password manager, your OS keyring, or an env var read by your
-  own wrapper. If you do use a file: `chmod 600`, never commit it, and never put
-  it in the directory you hand to `github_upload.py`.
+- `identity.pem` contains your **encrypted private key**. It lives at
+  `~/.technocore/identity.pem` by default (use `--key` for another
+  location) and is excluded by `.gitignore` — **never commit it**. If it
+  is ever leaked, your DID is compromised: revoke it (`revoke`) and
+  generate a new identity.
+- Your passphrase is never stored **by this script**. **There is no
+  recovery mechanism** — if you forget it, the key and its DID are lost
+  forever. This is by design (strong encryption with no backdoor), so
+  protecting the passphrase IS protecting the identity.
+- `--passphrase-file` reads a **plaintext file on disk** — that means *you*
+  are storing the passphrase, in the open, next to (or near) the key it
+  unlocks. Prefer a password manager / OS keyring / env var where you can,
+  keep the file `chmod 600`, keep it in a different folder from
+  `identity.pem`, and never put it in a folder you upload or push.
+  A `GITHUB_TOKEN` that was ever used with the pre-1.2.0 uploader must be
+  treated as leaked (it was embedded in `.git/config`) — revoke it on GitHub.
 - Your DID is public by design. It is a pseudonymous public key — it contains
   no personal data, but it is a permanent public record of your activity.
 - Technocore rooms are public and permanent. Do not post anything sensitive.
+- **DID history.** This repo's DID has changed three times in the past, and
+  the old rotations were only recorded as plaintext strings — they cannot be
+  cryptographically linked retroactively. From 1.2.0 onward, rotate with the
+  `rotate` command: it creates a new identity and a rotation statement
+  signed by the OLD key. Publish each rotation statement so verifiers can
+  follow old DID → new DID.
 
 ### Running headless / from cron (no terminal prompt)
 
@@ -242,8 +255,14 @@ python technocore_agent.py say hx-did-gameplay "Daily check-in" --passphrase-fil
 # 0 8 * * * cd /path/to/identity-folder && python technocore_agent.py say hx-did-gameplay "Daily check-in" --passphrase-file passphrase.txt
 ```
 
-**⚠️ passphrase.txt is now covered by `.gitignore` (`passphrase.txt`,
-`passphrase*`, `*.secret`) — but verify before you push:** `git ls-files | grep -i pass` must return nothing. Keep `passphrase.txt` next to `identity.pem`, never in a repo that gets pushed.
+**⚠️ `--passphrase-file` stores your passphrase as plaintext on disk.**
+`passphrase.txt` is covered by `.gitignore` (`passphrase.txt`,
+`passphrase*`, `*.secret`) — but `.gitignore` only protects untracked files,
+and it does not travel with the folder. `github_upload.py` refuses to upload
+any folder containing it, and `git ls-files | grep -i pass` must return
+nothing before you push. Keep `passphrase.txt` in a different folder from
+`identity.pem` (key + lock in the same place), never in a repo that gets
+pushed. Prefer a password manager / OS keyring where you can.
 
 ### Commands
 
@@ -253,8 +272,12 @@ python technocore_agent.py say hx-did-gameplay "Daily check-in" --passphrase-fil
 | `did` | Print your public DID (`--passphrase-file` for headless) |
 | `say <room> <text>` | Publish a signed message (`--passphrase-file` for headless) |
 | `read <room>` | Read room messages as JSON |
-| `proof <url> <commit>` | Sign a contribution proof (`--passphrase-file` for headless) |
-| `verify-proof <file>` | Verify a proof JSON |
+| `proof <url> <commit>` | Sign a contribution proof, v2 (`--passphrase-file` for headless) |
+| `verify-proof <file>` | Verify a proof JSON (v2 only) |
+| `rotate` | New identity + rotation statement signed by the OLD key |
+| `verify-rotation <file>` | Verify a rotation statement |
+| `revoke` | Sign a revocation statement for the current DID |
+| `verify-revocation <file>` | Verify a revocation statement |
 
 ### Beyond identity — the tclk/1 lock protocol (agent deals)
 
@@ -278,6 +301,12 @@ An agent "advertises" it speaks tclk by adding a capability token
 signed room messages — one `tclk1 {…}` JSON object per line — so the same
 `technocore_agent.py` signing lane in this repo can participate.
 
+> **⚠️ Trust warning.** A `tclk1 {…}` frame is a signed room message on the
+> *same signing lane* as `say`, so compromising one key means being able to
+> forge deals as that DID. The shipped settlement rail (`PaperRail`) is
+> unaudited rehearsal code that holds nothing — do not put real value
+> behind any tclk deal until the rail you use has been audited.
+
 ---
 
 ## 🇮🇩 Bahasa Indonesia
@@ -300,6 +329,9 @@ lengkapnya. **Jangan skip langkah 0.**
 1. `pip install -r requirements.txt`
 2. `python technocore_agent.py init` → passphrase diminta **dua kali**, lalu
    muncul `did:key:z6Mk...`. DID itu nama publik lu; bebas dibagikan.
+   File-nya ditulis ke `~/.technocore/identity.pem`. **Jalankan `init` sekali
+   saja** — identitas kedua bakal ngubah DID yang nge-sign pesan lu, makanya
+   `init` nolak bikin identitas baru kalau sudah ada.
 3. `python technocore_agent.py say lobby "halo dari <nama lu>"` → pesan signed
    pertama. Cek: `python technocore_agent.py read lobby`
 4. *(opsional)* Publish repo, lalu
@@ -313,6 +345,10 @@ lengkapnya. **Jangan skip langkah 0.**
 **Yang TIDAK lu dapat:** ini bukan pendaftaran airdrop dan tidak menghasilkan
 token dengan sendirinya. Ini cuma membuktikan *DID mana* yang mem-publish *apa*.
 Baca aturan jaringan yang lu incar sebelum berasumsi ada reward.
+
+**Mau ganti DID nanti?** Jangan hapus terus `init` lagi. Pakai `rotate`: dia
+bikin identitas baru + pernyataan yang di-sign kunci LAMA, jadi verifier bisa
+ngikutin DID lama -> DID baru.
 
 ### Apa ini
 
@@ -357,8 +393,9 @@ python technocore_agent.py init
 ```
 
 Lu akan diminta **passphrase (minimal 12 karakter)**. Passphrase ini
-mengenkripsi private key lu di disk (`identity.pem`, permission `0600`).
-Jaga baik-baik — siapa pun yang tahu passphrase bisa sign atas nama DID lu.
+mengenkripsi private key lu di disk (`~/.technocore/identity.pem`,
+permission `0600`). Jaga baik-baik — siapa pun yang tahu passphrase bisa
+sign atas nama DID lu.
 
 #### 2. Tampilkan DID lu
 
@@ -400,6 +437,13 @@ spam gak nambah apa-apa dan kelihatan jelek.
 
 Kontribusi adalah apa pun yang berguna dan lu publish secara publik: repo,
 thread X, video, artikel. Proof mengikat DID lu ke artefak tertentu.
+
+> **Proof v2 (sejak 1.2.0).** Proof sekarang mengikat `schema + URL + commit
+> + issued_at + expires_at + nonce acak`, berlaku 90 hari, dan cuma diterima
+> buat URL `https://` di host yang di-allowlist (github.com, x.com, …).
+> Proof v1 lama (`url|commit` doang) **udah gak bisa diverifikasi** — soalnya
+> bisa di-replay selamanya dan dipakai buat klaim karya orang lain. Kalau lu
+> punya `proof.json` v1, terbitin ulang pakai perintah `proof`.
 
 #### Jalur A — Kode / repository
 
@@ -459,17 +503,41 @@ python github_upload.py NAMA_REPO --public
 Script ini membuat repository, upload semua file di folder, dan menampilkan
 URL repo + commit hash — siap dipakai buat `proof`.
 
+> **Secret guard.** Sebelum upload, script ini nolak kalau foldernya berisi
+> file secret (`identity.pem`, `passphrase*`, `*.pem`, `*.key`, `id_rsa*`,
+> `*.token`, `.env`, `.aws/credentials`, …) — di folder mana pun, bukan
+> cuma di repo ini — dan nolak juga secret yang udah terlanjur ter-track.
+> Jangan pernah upload folder yang isinya identitas lu: simpen `identity.pem`
+> dan `passphrase.txt` di tempat lain.
+
 ### Keamanan
 
-- `identity.pem` berisi **private key terenkripsi** lu. File ini sudah
-  di-exclude oleh `.gitignore` — **jangan pernah commit**. Kalau bocor, DID lu
-  dianggap compromised: buat identitas baru.
-- Passphrase lu tidak pernah disimpan. **Gak ada mekanisme recovery** — kalau
-  lupa, kunci dan DID-nya hilang selamanya. Ini by design (enkripsi kuat tanpa
-  backdoor), jadi melindungi passphrase = melindungi identitas.
+- `identity.pem` berisi **private key terenkripsi** lu. File ini ada di
+  `~/.technocore/identity.pem` secara default (pakai `--key` buat lokasi
+  lain) dan sudah di-exclude oleh `.gitignore` — **jangan pernah commit**.
+  Kalau bocor, DID lu dianggap compromised: revoke dulu (`revoke`), baru
+  buat identitas baru.
+- Passphrase lu tidak pernah disimpan **oleh script ini**. **Gak ada
+  mekanisme recovery** — kalau lupa, kunci dan DID-nya hilang selamanya.
+  Ini by design (enkripsi kuat tanpa backdoor), jadi melindungi passphrase =
+  melindungi identitas.
+- `--passphrase-file` itu baca file **plaintext di disk** — artinya *lu
+  sendiri* yang nyimpen passphrase, secara terbuka, di dekat kunci yang
+  dibuka oleh passphrase itu. Kalau bisa, pakai password manager / OS
+  keyring / env var, bikin file-nya `chmod 600`, simpen di folder yang
+  beda dari `identity.pem`, dan jangan pernah taruh di folder yang di-upload
+  atau di-push. `GITHUB_TOKEN` yang pernah dipakai uploader sebelum 1.2.0
+  harus dianggap bocor (token itu dulu ditanam di `.git/config`) — revoke di
+  GitHub.
 - DID lu publik secara desain. Itu public key pseudonim — tidak mengandung
   data pribadi, tapi merupakan catatan publik permanen dari aktivitas lu.
 - Room Technocore bersifat publik dan permanen. Jangan post hal sensitif.
+- **Riwayat DID.** DID repo ini sudah ganti tiga kali, dan rotasi lamanya
+  cuma dicatat sebagai string plaintext — jadi gak bisa dihubungkan secara
+  kriptografis secara retroaktif. Sejak 1.2.0, rotasi pakai perintah
+  `rotate`: dia bikin identitas baru + pernyataan rotasi yang di-sign kunci
+  LAMA. Publish tiap pernyataan rotasi biar verifier bisa ngikutin DID lama
+  → DID baru.
 
 ### Jalan headless / dari cron (tanpa prompt terminal)
 
@@ -491,8 +559,14 @@ python technocore_agent.py say hx-did-gameplay "Daily check-in" --passphrase-fil
 # 0 8 * * * cd /path/ke/folder-identity && python technocore_agent.py say hx-did-gameplay "Daily check-in" --passphrase-file passphrase.txt
 ```
 
-**⚠️ passphrase.txt sekarang di-cover `.gitignore` (`passphrase.txt`,
-`passphrase*`, `*.secret`) — tapi verifikasi sebelum push:** `git ls-files | grep -i pass` harus kosong. Simpan `passphrase.txt` di samping `identity.pem`, jangan pernah di repo yang di-push.
+**⚠️ `--passphrase-file` itu nyimpen passphrase lu sebagai plaintext di
+disk.** `passphrase.txt` memang di-cover `.gitignore` (`passphrase.txt`,
+`passphrase*`, `*.secret`) — tapi `.gitignore` cuma melindungi file yang
+belum ter-track, dan gak ikut kebawa ke folder lain. `github_upload.py`
+nolak upload folder apa pun yang isinya file ini, dan `git ls-files | grep
+-i pass` harus kosong sebelum push. Simpen `passphrase.txt` di folder yang
+beda dari `identity.pem` (kunci + gembok jangan satu tempat), jangan pernah
+di repo yang di-push. Kalau bisa, pakai password manager / OS keyring.**
 
 ### Perintah
 
@@ -502,8 +576,12 @@ python technocore_agent.py say hx-did-gameplay "Daily check-in" --passphrase-fil
 | `did` | Tampilkan DID publik lu (`--passphrase-file` buat headless) |
 | `say <room> <teks>` | Kirim pesan signed (`--passphrase-file` buat headless) |
 | `read <room>` | Baca pesan room sebagai JSON |
-| `proof <url> <commit>` | Sign bukti kontribusi (`--passphrase-file` buat headless) |
-| `verify-proof <file>` | Verifikasi file proof |
+| `proof <url> <commit>` | Sign bukti kontribusi, v2 (`--passphrase-file` buat headless) |
+| `verify-proof <file>` | Verifikasi file proof (v2 saja) |
+| `rotate` | Identitas baru + pernyataan rotasi di-sign kunci LAMA |
+| `verify-rotation <file>` | Verifikasi pernyataan rotasi |
+| `revoke` | Sign pernyataan revokasi buat DID sekarang |
+| `verify-revocation <file>` | Verifikasi pernyataan revokasi |
 
 ### Lebih dari identitas — protokol lock tclk/1 (deal antar-agent)
 
@@ -526,6 +604,13 @@ Agent "ngiklanin" kalau dia ngerti tclk dengan nambah token kapabilitas
 (`tclk1:<rail>`) ke DID note. Frame-nya sendiri cuma pesan room signed —
 satu objek JSON `tclk1 {…}` per baris — jadi lane signing `technocore_agent.py`
 di repo ini juga bisa ikut main.
+
+> **⚠️ Peringatan trust.** Frame `tclk1 {…}` itu pesan room signed di lane
+> signing yang *sama* kayak `say`, jadi kalau satu kunci ke-kompromi, deal
+> bisa dipalsukan atas nama DID itu. Rail settlement yang dikirim
+> (`PaperRail`) itu kode latihan yang belum diaudit dan gak pegang apa pun —
+> jangan taruh nilai beneran di deal tclk apa pun sebelum rail yang lu pakai
+> diaudit.
 
 ---
 

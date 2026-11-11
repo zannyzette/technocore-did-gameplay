@@ -1,16 +1,33 @@
-# Secrets & keys — never commit these
+# Secrets & keys — never commit these.
+# NOTE: .gitignore only protects UNTRACKED files. A secret that was already
+# committed (git add -f) stays tracked — check with `git ls-files` and remove
+# it with `git rm --cached <file>` (and purge history if it was ever pushed).
+# github_upload.py additionally refuses to stage/commit these patterns.
 identity.pem
 *.pem
 *.key
 passphrase.txt
 passphrase*
 *.secret
+*secret*.txt
+*secret*.json
+id_rsa*
+id_ed25519*
+id_ecdsa*
+id_ed448*
+*.token
+*token*.txt
 
 # Environment / credentials
 .env
+.env.*
 *.env
 hosts.yml
 .git-credentials
+credentials
+credentials*
+.aws/
+.ssh/
 
 # Python
 __pycache__/
@@ -23,3 +40,8 @@ venv/
 .vscode/
 .DS_Store
 Thumbs.db
+
+# NOTE: rotation.json / revocation.json are deliberately NOT ignored — both
+# SECURITY.md and the CLI tell you to commit and publish them so verifiers can
+# follow old DID -> new DID. Read them before you commit: they are public
+# statements about your DID.
