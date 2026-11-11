@@ -167,10 +167,15 @@ the repo URL and commit hash — ready for `proof`.
 - `identity.pem` contains your **encrypted private key**. It is excluded by
   `.gitignore` — **never commit it**. If it is ever leaked, your DID is
   compromised: generate a new identity.
-- Your passphrase is never stored. **There is no recovery mechanism** — if
-  you forget it, the key and its DID are lost forever. This is by design
-  (strong encryption with no backdoor), so protecting the passphrase IS
-  protecting the identity.
+- The script never stores your passphrase — but the optional `--passphrase-file`
+  mode makes *you* store it in plaintext on disk. **There is no recovery
+  mechanism** — if you forget it, the key and its DID are lost forever. This is
+  by design (strong encryption with no backdoor), so protecting the passphrase
+  IS protecting the identity.
+- ⚠️ `passphrase.txt` next to `identity.pem` = the lock and its key in the same
+  folder. Prefer a password manager, your OS keyring, or an env var read by your
+  own wrapper. If you do use a file: `chmod 600`, never commit it, and never put
+  it in the directory you hand to `github_upload.py`.
 - Your DID is public by design. It is a pseudonymous public key — it contains
   no personal data, but it is a permanent public record of your activity.
 - Technocore rooms are public and permanent. Do not post anything sensitive.

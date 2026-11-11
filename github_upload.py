@@ -12,8 +12,10 @@ personal access token in the GITHUB_TOKEN environment variable.
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -21,9 +23,47 @@ import urllib.request
 
 API = "https://api.github.com"
 
+# Names/patterns that must never be committed from an arbitrary upload dir.
+SECRET_NAMES = {"identity.pem", "passphrase.txt", "passphrase", "credentials", "id_rsa", "id_ed25519"}
+SECRET_SUFFIXES = (".pem", ".key", ".p12", ".pfx", ".token")
+SECRET_DIRS = (".aws/", ".ssh/", ".gnupg/")
 
-def run(cmd: list[str], check: bool = True) -> subprocess.CompletedProcess:
-    return subprocess.run(cmd, capture_output=True, text=True, check=check)
+
+def run(cmd: list[str], check: bool = True, cwd: str | None = None) -> subprocess.CompletedProcess:
+    return subprocess.run(cmd, capture_output=True, text=True, check=check, cwd=cwd)
+
+
+def redact(text: str) -> str:
+    """Strip anything that looks like a token from text before printing it."""
+    text = re.sub(r"https://[^@\s]+@", "https://<redacted>@", text)
+    return re.sub(r"\b(?:gh[pousr]_|github_pat_)[A-Za-z0-9_]{8,}", "<redacted-token>", text)
+
+
+def staged_secrets(workdir: str) -> list[str]:
+    """Return staged paths that look like credentials. Empty list = safe to commit."""
+    r = run(["git", "diff", "--cached", "--name-only"], check=False, cwd=workdir)
+    bad = []
+    for path in r.stdout.splitlines():
+        path = path.strip()
+        if not path:
+            continue
+        low = path.lower()
+        base = os.path.basename(low)
+        if base in SECRET_NAMES or low.endswith(SECRET_SUFFIXES):
+            bad.append(path)
+        elif any(low.startswith(d) or f"/{d}" in low for d in SECRET_DIRS):
+            bad.append(path)
+    return bad
+
+
+def guard_staged(workdir: str) -> None:
+    bad = staged_secrets(workdir)
+    if bad:
+        raise RuntimeError(
+            "refusing to commit: staged files look like credentials: "
+            + ", ".join(bad)
+            + " — move them out of the upload dir or add them to .gitignore"
+        )
 
 
 def have_gh() -> bool:
@@ -75,19 +115,25 @@ def create_repo_api(token: str, name: str, private: bool, description: str) -> s
 
 
 def push_with_token(token: str, repo_full: str, name: str, branch: str, workdir: str) -> str:
-    """Push via token-embedded URL (works without gh)."""
+    """Push using a one-shot auth header — the token never lands in .git/config."""
     subprocess.run(["git", "init", "-b", branch], cwd=workdir, check=True, capture_output=True)
     subprocess.run(["git", "add", "-A"], cwd=workdir, check=True, capture_output=True)
+    guard_staged(workdir)
     # Only commit if there are changes
-    r = run(["git", "diff", "--cached", "--quiet"], check=False)
+    r = run(["git", "diff", "--cached", "--quiet"], check=False, cwd=workdir)
     if r.returncode != 0:
         subprocess.run(["git", "commit", "-m", f"Technocore contribution: {name}"],
                        cwd=workdir, check=True, capture_output=True)
-    remote_url = f"https://x-access-token:{token}@github.com/{repo_full}.git"
+    clean_url = f"https://github.com/{repo_full}.git"
+    # base64("x-access-token:<token>") as a Basic auth header, passed via -c so it is
+    # never written to .git/config and never appears in argv of a persisted remote.
+    basic = base64.b64encode(("x-access-" + "token:" + token).encode()).decode()
     subprocess.run(["git", "remote", "remove", "origin"], cwd=workdir, check=False, capture_output=True)
-    subprocess.run(["git", "remote", "add", "origin", remote_url], cwd=workdir, check=True, capture_output=True)
-    subprocess.run(["git", "push", "-u", "origin", branch], cwd=workdir, check=True, capture_output=True)
-    r = run(["git", "rev-parse", "HEAD"], check=False)
+    subprocess.run(["git", "remote", "add", "origin", clean_url], cwd=workdir, check=True, capture_output=True)
+    subprocess.run(["git", "-c", "http.extraHeader=AUTHORIZATION: basic " + basic,
+                    "push", "-u", "origin", branch],
+                   cwd=workdir, check=True, capture_output=True)
+    r = run(["git", "rev-parse", "HEAD"], check=False, cwd=workdir)
     return r.stdout.strip()
 
 
@@ -118,7 +164,8 @@ def main() -> int:
                     raise RuntimeError("gh repo create failed")
                 subprocess.run(["git", "init", "-b", branch], cwd=workdir, check=True, capture_output=True)
                 subprocess.run(["git", "add", "-A"], cwd=workdir, check=True, capture_output=True)
-                rc = run(["git", "diff", "--cached", "--quiet"], check=False)
+                guard_staged(workdir)
+                rc = run(["git", "diff", "--cached", "--quiet"], check=False, cwd=workdir)
                 if rc.returncode != 0:
                     subprocess.run(["git", "commit", "-m", f"Technocore contribution: {args.name}"],
                                    cwd=workdir, check=True, capture_output=True)
@@ -127,7 +174,7 @@ def main() -> int:
                                 f"https://github.com/{username}/{args.name}.git"],
                                cwd=workdir, check=True, capture_output=True)
                 subprocess.run(["git", "push", "-u", "origin", branch], cwd=workdir, check=True, capture_output=True)
-            commit = run(["git", "rev-parse", "HEAD"]).stdout.strip()
+            commit = run(["git", "rev-parse", "HEAD"], cwd=workdir).stdout.strip()
             print(f"repo:    https://github.com/{username}/{args.name}")
             print(f"commit:  {commit}")
             return 0
@@ -145,7 +192,7 @@ def main() -> int:
         print("no auth found: install/authenticate `gh` (gh auth login) or set GITHUB_TOKEN", file=sys.stderr)
         return 1
     except Exception as e:
-        print(f"error: {e}", file=sys.stderr)
+        print(f"error: {redact(str(e))}", file=sys.stderr)
         return 1
 
 

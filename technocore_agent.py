@@ -26,6 +26,7 @@ import time
 import unicodedata
 from pathlib import Path
 from urllib.error import HTTPError, URLError
+from urllib.parse import urlsplit
 from urllib.request import Request, urlopen
 
 from cryptography.exceptions import InvalidSignature
@@ -37,8 +38,13 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import (
 
 APP_VERSION = "1.1.0"
 BASE_URL = "https://technocore.chat"
-KEY_PATH = Path("identity.pem")
+KEY_PATH = Path.home() / ".technocore" / "identity.pem"
 TIMEOUT = 20.0
+MAX_BODY = 1_000_000
+MAX_DID_CHARS = 100
+PROOF_SCHEMA_V1 = "technocore-contribution-proof-v1"
+PROOF_SCHEMA_V2 = "technocore-contribution-proof-v2"
+PROOF_TTL_SECONDS = 365 * 24 * 3600
 
 MAX_MESSAGE_CHARS = 4096
 NAME_PATTERN = re.compile(r"[a-z0-9][a-z0-9_-]{0,47}")
@@ -100,6 +106,8 @@ def public_key_from_did(did: str) -> Ed25519PublicKey:
     """Parse a did:key:z6Mk... string back into a public key."""
     if not did.startswith("did:key:z"):
         raise ProtocolError("DID must start with 'did:key:z'")
+    if len(did) > MAX_DID_CHARS:
+        raise ProtocolError(f"DID too long ({len(did)} chars, max {MAX_DID_CHARS})")
     try:
         decoded = _b58_decode(did[len("did:key:z"):])
     except (ValueError, IndexError):
@@ -142,6 +150,22 @@ def validate_nonce(value) -> str:
     return nonce
 
 
+def validate_artifact_url(url: str) -> str:
+    """Only clean https URLs — no userinfo, no whitespace/control chars, real host."""
+    if not isinstance(url, str):
+        raise ProtocolError("artifact_url must be a string")
+    if any(ch.isspace() or unicodedata.category(ch).startswith("C") for ch in url):
+        raise ProtocolError("artifact_url must not contain whitespace or control characters")
+    parsed = urlsplit(url)
+    if parsed.scheme != "https":
+        raise ProtocolError("artifact_url must use https://")
+    if not parsed.hostname:
+        raise ProtocolError("artifact_url has no host")
+    if parsed.username or parsed.password:
+        raise ProtocolError("artifact_url must not embed credentials")
+    return url
+
+
 def next_nonce() -> str:
     return validate_nonce(time.time_ns())
 
@@ -169,18 +193,18 @@ def create_identity(path: Path = KEY_PATH, passphrase: str | None = None) -> str
         raise IdentityError(f"identity already exists: {path}")
     if passphrase is None:
         passphrase = getpass.getpass("New identity passphrase (12+ chars): ")
-    if len(passphrase) < 12:
-        raise IdentityError("passphrase must be at least 12 characters")
-    if passphrase is None:
         confirm = getpass.getpass("Confirm passphrase: ")
         if passphrase != confirm:
             raise IdentityError("passphrases do not match")
+    if len(passphrase) < 12:
+        raise IdentityError("passphrase must be at least 12 characters")
     pk = Ed25519PrivateKey.generate()
     private_bytes = pk.private_bytes(
         serialization.Encoding.PEM,
         serialization.PrivateFormat.PKCS8,
         serialization.BestAvailableEncryption(passphrase.encode()),
     )
+    path.parent.mkdir(parents=True, exist_ok=True)
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     with os.fdopen(fd, "wb") as f:
         f.write(private_bytes)
@@ -192,7 +216,9 @@ def load_identity(path: Path = KEY_PATH, passphrase: str | None = None) -> Ed255
         raise IdentityError(f"identity not found: {path} — run 'init' first")
     private_bytes = path.read_bytes()
     try:
-        return serialization.load_pem_private_key(private_bytes, password=None)
+        pk = serialization.load_pem_private_key(private_bytes, password=None)
+        print(f"warning: {path} is NOT encrypted — anyone who reads it owns your DID", file=sys.stderr)
+        return pk
     except TypeError:
         if passphrase is None:
             passphrase = getpass.getpass(f"Passphrase for {path}: ")
@@ -214,12 +240,18 @@ def _request(path: str, body: dict | None = None) -> dict:
     req = Request(url, data=data, headers=headers)
     try:
         with urlopen(req, timeout=TIMEOUT) as resp:
-            return json.loads(resp.read().decode("utf-8"))
+            raw = resp.read(MAX_BODY + 1)
     except HTTPError as e:
-        detail = e.read().decode("utf-8", errors="replace")[:300]
+        detail = e.read(MAX_BODY).decode("utf-8", errors="replace")[:300]
         raise NetworkError(f"HTTP {e.code}: {detail}")
     except URLError as e:
         raise NetworkError(f"network error: {e.reason}")
+    if len(raw) > MAX_BODY:
+        raise NetworkError(f"response too large (> {MAX_BODY} bytes)")
+    try:
+        return json.loads(raw.decode("utf-8"))
+    except (json.JSONDecodeError, UnicodeDecodeError) as e:
+        raise NetworkError(f"invalid JSON response: {e}")
 
 
 # ---------------------------------------------------------------------------
@@ -247,31 +279,64 @@ def read_room(room: str, limit: int = 50, since: int | None = None) -> dict:
     return _request(f"/r/{validate_name(room)}{query}")
 
 
-def contribution_proof(pk: Ed25519PrivateKey, artifact_url: str, commit: str) -> dict:
-    """Sign a public contribution (repo URL + commit) with the DID."""
-    if not (artifact_url.startswith("https://") or artifact_url.startswith("http://")):
-        raise ProtocolError("artifact_url must be an http(s) URL")
+def contribution_proof(pk: Ed25519PrivateKey, artifact_url: str, commit: str,
+                       ttl_seconds: int = PROOF_TTL_SECONDS) -> dict:
+    """Sign a public contribution (repo URL + commit) with the DID (schema v2)."""
+    artifact_url = validate_artifact_url(artifact_url)
     if COMMIT_PATTERN.fullmatch(commit or "") is None:
         raise ProtocolError("commit must be a 40 or 64 char hex string")
     did = did_from_private_key(pk)
-    payload = f"{artifact_url}|{commit}".encode()
+    issued_at = int(time.time())
+    expires_at = issued_at + int(ttl_seconds)
+    nonce = base64.urlsafe_b64encode(os.urandom(16)).decode("ascii").rstrip("=")
+    payload = f"{PROOF_SCHEMA_V2}|{artifact_url}|{commit}|{issued_at}|{expires_at}|{nonce}".encode()
     return {
-        "schema": "technocore-contribution-proof-v1",
+        "schema": PROOF_SCHEMA_V2,
         "artifact_url": artifact_url,
         "commit": commit,
+        "issued_at": issued_at,
+        "expires_at": expires_at,
+        "nonce": nonce,
         "did": did,
         "signature": sign_bytes(pk, payload),
     }
 
 
-def verify_contribution_proof(proof: dict) -> None:
+def verify_contribution_proof(proof: dict, check_expiry: bool = True) -> None:
     for key in ("artifact_url", "commit", "did", "signature"):
         if not proof.get(key):
             raise ProtocolError(f"proof missing field: {key}")
     if COMMIT_PATTERN.fullmatch(str(proof["commit"])) is None:
         raise ProtocolError("proof has invalid commit")
-    payload = f"{proof['artifact_url']}|{proof['commit']}".encode()
-    raw_sig = base64.urlsafe_b64decode(proof["signature"] + "==")
+    schema = proof.get("schema")
+    if schema not in (PROOF_SCHEMA_V2, PROOF_SCHEMA_V1):
+        raise ProtocolError(f"unsupported proof schema: {schema!r}")
+    sig = str(proof["signature"])
+    if SIGNATURE_PATTERN.fullmatch(sig) is None:
+        raise ProtocolError("proof signature is not a valid base64url Ed25519 signature")
+    if schema == PROOF_SCHEMA_V2:
+        artifact_url = validate_artifact_url(str(proof["artifact_url"]))
+        for field in ("issued_at", "expires_at", "nonce"):
+            if proof.get(field) in (None, ""):
+                raise ProtocolError(f"proof missing field: {field}")
+        try:
+            issued_at = int(proof["issued_at"])
+            expires_at = int(proof["expires_at"])
+        except (TypeError, ValueError):
+            raise ProtocolError("proof issued_at/expires_at must be integers")
+        if expires_at <= issued_at:
+            raise ProtocolError("proof expires_at must be after issued_at")
+        if check_expiry and time.time() > expires_at:
+            raise ProtocolError(f"proof expired at {expires_at}")
+        nonce = str(proof["nonce"])
+        if not re.fullmatch(r"[A-Za-z0-9_-]{8,64}", nonce):
+            raise ProtocolError("proof nonce is malformed")
+        payload = (f"{schema}|{artifact_url}|{proof['commit']}|{issued_at}|"
+                   f"{expires_at}|{nonce}").encode()
+    else:
+        # legacy v1: url|commit, no expiry, no replay protection
+        payload = f"{proof['artifact_url']}|{proof['commit']}".encode()
+    raw_sig = base64.urlsafe_b64decode(sig + "==")
     try:
         public_key_from_did(proof["did"]).verify(raw_sig, payload)
     except (InvalidSignature, ValueError):
@@ -324,7 +389,8 @@ def main(argv=None) -> int:
 
     try:
         pf = args.passphrase_file if hasattr(args, 'passphrase_file') and args.passphrase_file else None
-        pphrase = pf.read_text().strip() if pf else None
+        # only strip the trailing newline — leading/trailing spaces are part of the passphrase
+        pphrase = pf.read_text().rstrip("\r\n") if pf else None
 
         if args.command == "init":
             did = create_identity(passphrase=pphrase)
@@ -337,6 +403,7 @@ def main(argv=None) -> int:
             print(did_from_private_key(pk))
         elif args.command == "say":
             pk = load_identity(args.key, passphrase=pphrase)
+            print(f"signing as {did_from_private_key(pk)}", file=sys.stderr)
             result = post_signed_message(pk, args.room, args.text)
             print(json.dumps(result, indent=2))
         elif args.command == "read":
@@ -344,15 +411,19 @@ def main(argv=None) -> int:
             print(json.dumps(result, indent=2))
         elif args.command == "proof":
             pk = load_identity(args.key, passphrase=pphrase)
+            print(f"signing as {did_from_private_key(pk)}", file=sys.stderr)
             proof = contribution_proof(pk, args.artifact_url, args.commit)
             args.output.write_text(json.dumps(proof, indent=4) + "\n")
             print(args.output)
         elif args.command == "verify-proof":
             proof = json.loads(args.proof_file.read_text())
             verify_contribution_proof(proof)
-            print(f"valid proof for {proof['did']}")
+            print(f"valid proof for {proof['did']} (schema {proof.get('schema')})")
     except (ProtocolError, IdentityError, NetworkError) as e:
         print(f"error: {e}", file=sys.stderr)
+        return 1
+    except (ValueError, OSError, json.JSONDecodeError) as e:
+        print(f"error: {type(e).__name__}: {e}", file=sys.stderr)
         return 1
     return 0
 
