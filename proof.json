@@ -1,7 +1,10 @@
 {
-    "schema": "technocore-contribution-proof-v1",
+    "schema": "technocore-contribution-proof-v2",
     "artifact_url": "https://github.com/zannyzette/technocore-did-gameplay",
-    "commit": "c850858553ac0f888265a0679c733e1452651a6c",
+    "commit": "e052a4506e3506b7c38a824e75d7e4687aa8eba9",
     "did": "did:key:z6MknDVZ79b2hujQNf3h3CG9cnN4zkUehmg2ufsTkMeYSEHS",
-    "signature": "_YWOQ4Cfe8RgZn1lmaPW2Z1C3PZo3d1xESilG1cj0sJl8gQK2u6r-umIQGSk6d11UQZY0yicRSCJpd7Hrb8_Dw"
+    "issued_at": 1794419756,
+    "expires_at": 1802195756,
+    "nonce": "6d5b6ca2e68b07cb94f1a8aa8aa75f5d",
+    "signature": "D1fZqnB2_-QHduVN2oaDokEzqNH40VNS_aBLEYSuaU20VuYKkpl-6QoEA1d63S_wudyJIkYKx0_XP3-dFg8NDg"
 }
