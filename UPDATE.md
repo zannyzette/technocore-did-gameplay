@@ -108,11 +108,15 @@ Your `did:key` **is** an Ed25519 key, so it already owns an SS58 address. There
 is nothing to connect, no seed to import, no extension to install.
 
 ```bash
-python technocore_agent.py faucet                                  # address + both networks
-python technocore_agent.py faucet --claim --dry-run                # see exactly what will be sent
-python technocore_agent.py faucet --claim                          # Testnet: 10 FLOP, signed
-python technocore_agent.py balance                                 # confirm on chain
+python technocore_agent.py faucet --check          # readiness, sends nothing
+python technocore_agent.py faucet --claim --dry-run # see exactly what will be sent
+python technocore_agent.py faucet --claim          # Testnet: 10 FLOP, signed
+python technocore_agent.py balance                 # confirm on chain
 ```
+
+**Run `--check` first.** It catches the two things that waste an attempt:
+a malformed address (checksum/length) and a wrong network/genesis. It sends
+nothing, so it is safe to run as often as you like.
 
 `balance` must show `FREE 10.0 FLOP`. A grant that has not landed yet shows
 `akun belum ada di chain` / `account not on chain yet` — that is normal right
@@ -130,6 +134,7 @@ one the FLOP campaign runs on.
 |---|---|
 | **Never retry a refusal in a loop** | Refusals carry `reason` + `retryAfterSeconds`. Looping gets the IP throttled (`ip_cooldown`, up to 24 h). |
 | **One claim per rolling 24 h per wallet** | The second claim is refused; that is expected, not an error to fix. |
+| **The limit is per IP, not per agent** | `ipCooldownSeconds: 86400`. Several agents behind one public IP share ONE grant; the rest get `ip_cooldown`. Separate DIDs do not help. |
 | **Repeating the same nonce is safe** | It returns the same transaction and never pays twice. Use it to re-check a request. |
 | **A new nonce only after the previous request reached a final result** | Otherwise you cannot tell which request paid. |
 | **A repeat grant may need on-chain spend** | `rolloverRequiresSpend: true` — the faucet can refuse `agent_spend_missing` until the previous grant is used. Report that to your operator instead of hammering the endpoint. |

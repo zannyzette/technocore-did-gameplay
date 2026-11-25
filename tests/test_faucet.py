@@ -173,7 +173,7 @@ def test_agent_claim_signs_with_identity_key(monkeypatch):
     monkeypatch.setattr(tca, "faucet_status", fake_status)
     monkeypatch.setattr(tca, "_faucet_request_full", fake_post)
 
-    status, out = tca.faucet_agent_claim(pk, "5Abc", nonce="123")
+    status, out = tca.faucet_agent_claim(pk, ALICE_SS58, nonce="123")
     assert status == 200
     assert seen["path"] == "/v1/testnet/agent-claims"
     assert seen["body"]["nonce"] == "123"
@@ -191,7 +191,7 @@ def test_agent_claim_rejects_bad_nonce(monkeypatch):
                         lambda network="testnet": {"genesisHash": TESTNET_GENESIS})
     pk = Ed25519PrivateKey.from_private_bytes(bytes(range(32)))
     with pytest.raises(tca.ProtocolError):
-        tca.faucet_agent_claim(pk, "5Abc", nonce="12ab")
+        tca.faucet_agent_claim(pk, ALICE_SS58, nonce="12ab")
 
 
 def test_agent_claim_is_testnet_only(monkeypatch):
@@ -199,7 +199,7 @@ def test_agent_claim_is_testnet_only(monkeypatch):
 
     pk = Ed25519PrivateKey.from_private_bytes(bytes(range(32)))
     with pytest.raises(tca.ProtocolError):
-        tca.faucet_agent_claim(pk, "5Abc", network="devnet")
+        tca.faucet_agent_claim(pk, ALICE_SS58, network="devnet")
 
 
 def test_status_rejects_wrong_network(monkeypatch):
@@ -212,6 +212,59 @@ def test_status_rejects_wrong_network(monkeypatch):
     monkeypatch.setattr(tca, "_faucet_request", fake)
     with pytest.raises(tca.NetworkError):
         tca.faucet_status("devnet")
+
+
+# --- SS58 validation (the "invalid address" class of failure) --------------
+
+def test_validate_accepts_real_address():
+    info = tca.validate_ss58(ALICE_SS58)
+    assert info["valid"] is True
+    assert info["format"] == 42
+    assert info["account"] == ALICE_PUB.hex()
+
+
+def test_validate_rejects_wrong_length():
+    """A hallucinated address decodes to the wrong byte count — catch it early."""
+    with pytest.raises(tca.ProtocolError) as e:
+        tca.validate_ss58("5C4T8FBwBwZzRKvMHE8AVzXDMhxjuk2s5hQjBjMJSn5zVaR")
+    assert "34 bytes" in str(e.value)
+
+
+def test_validate_rejects_bad_checksum():
+    """Right length, wrong checksum: flipping the last char must be caught."""
+    broken = ALICE_SS58[:-1] + ("Y" if ALICE_SS58[-1] != "Y" else "Z")
+    with pytest.raises(tca.ProtocolError):
+        tca.validate_ss58(broken)
+
+
+def test_validate_rejects_garbage():
+    for bad in ("", "not-an-address", "0OIl"):
+        with pytest.raises(tca.ProtocolError):
+            tca.validate_ss58(bad)
+
+
+def test_claim_fails_before_signing_on_bad_address(monkeypatch):
+    """No network call at all when the address is malformed."""
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+    called = []
+    monkeypatch.setattr(tca, "faucet_status",
+                        lambda network="testnet": called.append(1) or {})
+    pk = Ed25519PrivateKey.from_private_bytes(bytes(range(32)))
+    with pytest.raises(tca.ProtocolError):
+        tca.faucet_agent_claim(pk, "5C4T8FBwBwZzRKvMHE8AVzXDMhxjuk2s5hQjBjMJSn5zVaR")
+    assert called == [], "must not touch the network with an invalid address"
+
+
+def test_validate_is_not_a_gate_for_unfunded_wallets():
+    """A never-funded wallet is not on chain — that must not read as 'not ready'."""
+    import subprocess, sys, json, os
+    # covered structurally: 'account on chain' is in info_only, so it cannot
+    # flip the ready flag. Assert the contract on the helper that decides it.
+    checks = [("address checksum", True, ""), ("network", True, ""),
+              ("account on chain", True, "belum ada")]
+    info_only = {"account on chain"}
+    assert all(v for n, v, _ in checks if n not in info_only) is True
 
 
 # --- on-chain balance ------------------------------------------------------

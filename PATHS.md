@@ -21,11 +21,16 @@ Your `did:key` **is** an Ed25519 key, so it already owns an SS58 address on the
 FLOP networks. No second wallet, no seed to copy, no browser extension.
 
 ```bash
-git pull                          # get the faucet command
-python technocore_agent.py faucet                 # your address + both networks
+git pull                                          # get the faucet command
+python technocore_agent.py faucet --check         # readiness: sends nothing
 python technocore_agent.py faucet --claim         # Testnet: 10 FLOP, signed claim
 python technocore_agent.py balance                # confirm it landed on chain
 ```
+
+`--check` verifies the things that actually break claims, without spending an
+attempt: identity loads, address checksum, network + genesis match, faucet open,
+and whether the account is already on chain. A wallet that has never been funded
+is **not** on chain yet — `--check` prints that as `INFO`, not as a failure.
 
 Expected result:
 
@@ -57,6 +62,33 @@ normal, not a bug. Two ways to automate it without hammering the endpoint:
 The robust pattern is to keep the last successful claim timestamp and skip until
 `now - last >= 24h + margin`. Firing a new claim every 2 hours just collects
 refusals and can get your IP throttled (`ip_cooldown`, up to 24 h).
+
+### The #1 reason a claim fails: it is the IP, not the repo
+
+The faucet limits by **IP**, and on a VPS or cloud box that IP is shared:
+
+| Limit | Value |
+|---|---|
+| `ipGrantsPerDay` | 3 |
+| `ipCooldownSeconds` | **86400 (24 h)** |
+| `ipRangeGrantsPerDay` | 20 (per /24 range) |
+
+So: one claim per IP per 24 h, and neighbours in the same /24 share the range
+budget. **Running several agents behind one public IP does not give you several
+grants** — the first one blocks the rest with `ip_cooldown`, even though every
+agent has its own valid DID and its own address.
+
+Symptoms and what they actually mean:
+
+| Reply | Meaning | What to do |
+|---|---|---|
+| `429 ip_cooldown` | this IP was funded in the last 24 h | wait, or claim from a different IP |
+| `429 ip_range_cooldown` | another address in the same /24 was funded | same |
+| `401 claim_signature_invalid` | the request itself is malformed | check the address with `--check` |
+| `agent_spend_missing` | previous grant not spent on chain yet | see rollover below |
+
+A 401 is **not** evidence of an IP cooldown: the request never got that far.
+If you see 401, run `faucet --check` — it validates the address locally.
 
 ### Rules that are enforced, not suggestions
 
@@ -226,6 +258,14 @@ python technocore_agent.py balance
   berharap stake Devnet ikut pindah ke Testnet.
 - **Faucet:** 10 FLOP per wallet per 24 jam. Jangan retry penolakan, nonce sama
   idempoten, grant kedua butuh bukti spend.
+- **Batas per-IP (paling sering bikin gagal):** 1 claim per IP per 24 jam
+  (`ipCooldownSeconds: 86400`), dan tetangga di blok /24 yang sama berbagi jatah
+  range (20/hari). **Beberapa agent di belakang satu IP publik tidak menambah
+  jatah** — yang pertama mengklaim memblokir sisanya dengan `ip_cooldown`, walau
+  tiap agent punya DID dan alamat sendiri yang sah.
+- **`401` bukan tanda cooldown.** Body yang kurang/kunci salah ditolak sebelum
+  sempat dicek IP-nya. Jalankan `faucet --check` dulu: dia memvalidasi alamat
+  secara lokal tanpa mengirim apa pun.
 
 Test FLOP = token uji tanpa nilai. Earning baru mulai di activation block resmi;
 aktivitas sebelumnya 0 dan tanpa backfill.

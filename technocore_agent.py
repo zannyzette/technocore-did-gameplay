@@ -229,6 +229,32 @@ def ss58_address_from_pubkey(pubkey: bytes, fmt: int = FAUCET_SS58_FORMAT) -> st
     return _b58_encode(payload + checksum)
 
 
+def validate_ss58(address: str, fmt: int = FAUCET_SS58_FORMAT) -> dict:
+    """Check an SS58 string really is a usable address: length + checksum.
+
+    A typo'd or hallucinated address fails at claim time with a confusing
+    `claim_signature_invalid`. Catching it here costs nothing and is the single
+    most common self-inflicted failure, so it gets its own function.
+    """
+    if not isinstance(address, str) or not address:
+        raise ProtocolError("address must be a non-empty string")
+    try:
+        raw = _b58_decode(address)
+    except (ValueError, IndexError):
+        raise ProtocolError("address has invalid base58btc characters")
+    if len(raw) != 35:
+        raise ProtocolError(
+            f"address decodes to {len(raw)} bytes, expected 35 "
+            f"(prefix 1 + account 32 + checksum 2)"
+        )
+    payload, checksum = raw[:-2], raw[-2:]
+    expected = hashlib.blake2b(SS58_PREIMAGE + payload, digest_size=64).digest()[:2]
+    if checksum != expected:
+        raise ProtocolError("address checksum does not match — it is not a real address")
+    return {"address": address, "format": payload[0],
+            "account": payload[1:].hex(), "valid": True}
+
+
 def ss58_address_from_did(did: str) -> str:
     """SS58 address of the SAME Ed25519 key that a did:key names.
 
@@ -351,6 +377,9 @@ def faucet_agent_claim(
     """
     if network != "testnet":
         raise ProtocolError("the signed agent-claim lane exists on testnet only")
+    # Validate the address FIRST: a malformed address must fail locally, before
+    # any network call, so it can never be mistaken for a faucet-side refusal.
+    validate_ss58(address)
     info = faucet_status(network)
     genesis = info.get("genesisHash")
     if not genesis:
@@ -454,14 +483,8 @@ FLOP_DECIMALS = 18
 
 def account_storage_key(ss58: str) -> str:
     """Storage key of System.Account for an SS58 address (format 42)."""
-    try:
-        raw = _b58_decode(ss58)
-    except (ValueError, IndexError):
-        raise ProtocolError("SS58 address has invalid base58btc data")
-    if len(raw) != 35:
-        raise ProtocolError(
-            f"SS58 must decode to 35 bytes, got {len(raw)} — wrong format prefix?"
-        )
+    info = validate_ss58(ss58)
+    raw = _b58_decode(ss58)
     account = raw[1:33]
     digest = hashlib.blake2b(account, digest_size=16).digest()
     return ACCOUNT_STORAGE_PREFIX + digest.hex() + account.hex()
@@ -1073,6 +1096,9 @@ def main(argv=None) -> int:
     faucet.add_argument("--nonce", default=None,
                         help="claim nonce (1-19 digits). Repeat the SAME nonce to "
                              "re-check a request without paying twice")
+    faucet.add_argument("--check", action="store_true",
+                        help="readiness check only: identity, address checksum, network, "
+                             "limits. Sends nothing — safe to run any time")
     faucet.add_argument("--claim", action="store_true",
                         help="actually claim (default: show address + limits only)")
     faucet.add_argument("--chat", action="store_true",
@@ -1187,6 +1213,64 @@ def main(argv=None) -> int:
             address = ss58_address_from_did(did)
             network = args.network
 
+            if args.check:
+                # Everything except the POST. A typo'd address or a wrong network
+                # fails here instead of surfacing as a confusing claim error.
+                checks = []
+                try:
+                    info = validate_ss58(address)
+                    checks.append(("address checksum", True,
+                                   f"{address[:8]}...{address[-6:]} "
+                                   f"({len(bytes.fromhex(info['account']))} byte key)"))
+                except ProtocolError as e:
+                    checks.append(("address checksum", False, str(e)))
+                try:
+                    st = faucet_status(network)
+                    checks.append(("network", st.get("network") == network,
+                                   f"{st.get('network')} · {st.get('chain')}"))
+                    checks.append(("genesis", bool(st.get("genesisHash")),
+                                   str(st.get("genesisHash"))[:20] + "..."))
+                    checks.append(("faucet open", st.get("faucetStatus") == "open",
+                                   str(st.get("faucetStatus"))))
+                except (ProtocolError, NetworkError) as e:
+                    checks.append(("faucet reachable", False, str(e)[:80]))
+                # Balance is INFORMATIONAL, not a gate: a wallet that has never
+                # been funded is not on chain yet, which is the normal starting
+                # state. Treating that as "not ready" would tell every new user
+                # their install is broken.
+                info_only = set()
+                try:
+                    bal = devnet_balance(address, network=network)
+                    checks.append(("account on chain", True,
+                                   f"{bal.get('free', 0)} FLOP" if bal["exists"]
+                                   else "belum ada — normal, belum pernah dibayar"))
+                    info_only.add("account on chain")
+                except (ProtocolError, NetworkError) as e:
+                    checks.append(("rpc reachable", False, str(e)[:80]))
+
+                ok = all(v for n, v, _ in checks if n not in info_only)
+                if args.json:
+                    print(json.dumps({"network": network, "did": did, "ss58": address,
+                                      "ready": ok,
+                                      "checks": [{"name": n, "ok": v, "detail": d}
+                                                 for n, v, d in checks]}, indent=2))
+                else:
+                    print(f"DID      {did}")
+                    print(f"SS58     {address}")
+                    print()
+                    for n, v, d in checks:
+                        mark = "OK  " if v else ("INFO" if n in info_only else "FAIL")
+                        print(f"{mark}  {n:<20} {d}")
+                    print()
+                    print("READY — jalankan: faucet --claim" if ok else
+                          "BELUM READY — perbaiki yang FAIL di atas dulu.")
+                print()
+                print("Catatan: faucet membatasi per-IP (ipGrantsPerDay, "
+                      "ipCooldownSeconds). Di VPS/datacenter IP dipakai bersama, jadi "
+                      "hasil bisa ip_cooldown walau semua cek di atas OK. Itu bukan "
+                      "salah repo — coba dari IP lain atau tunggu cooldown habis.",
+                      file=sys.stderr)
+                return 0 if ok else 1
             if not args.claim:
                 # Status only: show BOTH networks, because they are not the same
                 # faucet and mixing them up is the usual mistake.
