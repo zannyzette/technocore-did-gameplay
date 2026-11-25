@@ -1,5 +1,31 @@
 # Changelog
 
+## 1.3.0 — 2026-11-25 (faucet + balance)
+
+### Added
+- **`faucet` command.** Derives the SS58 address of your `did:key` (the DID *is*
+  an Ed25519 key, so no second wallet is needed) and shows the live state of
+  both FLOP faucets. `--claim` claims Testnet (10 FLOP, signed agent claim) or
+  Devnet (`--network devnet`, 25 FLOP, plain `POST /fund`).
+- **`balance` command.** Reads `System.Account` off the Testnet/Devnet RPC so you
+  can confirm a grant actually landed. Reports "account not on chain yet" for a
+  queued grant instead of printing 0.
+- 11 new offline tests (143 total): SS58 vectors (Alice/Bob dev accounts), the
+  byte-exact claim message, signature verification, refusal handling, and the
+  "never retry a refusal" contract.
+
+### Notes
+- The two faucets are **different hosts**: `faucet.flop.network` serves Testnet,
+  `faucet.devnet.flop.network` serves Devnet. `/limits?network=devnet` on the
+  Testnet host silently returns Testnet data, so the host decides — the code
+  cross-checks `GET /chain` and refuses to sign on a mismatch.
+- Reads are retried (Cloudflare stalls); **writes are never retried**, because a
+  retried claim can pay twice. Repeating the same nonce is the documented way to
+  re-check a request and is idempotent.
+- Devnet/Testnet FLOP are test tokens with no value; a grant earns no airdrop
+  credit.
+
+
 ## 1.2.1 — 2026-11-12 (review of the 1.2.0 patch)
 
 Closes 7 gaps found while reviewing the 1.2.0 security patch. 118 tests pass.

@@ -17,6 +17,7 @@ Commands:
   revoke           sign a revocation statement for the current DID
   verify-revocation
                    verify a DID revocation statement
+  faucet           free devnet FLOP for the SS58 address of your own did:key
 
 Security notes (see SECURITY.md for the full policy):
   * The default identity lives at ~/.technocore/identity.pem (0600,
@@ -33,6 +34,7 @@ import argparse
 import base64
 import binascii
 import getpass
+import hashlib
 import json
 import os
 import re
@@ -52,7 +54,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import (
     Ed25519PublicKey,
 )
 
-APP_VERSION = "1.2.1"
+APP_VERSION = "1.3.0"
 BASE_URL = "https://technocore.chat"
 KEY_PATH = Path.home() / ".technocore" / "identity.pem"
 LEGACY_KEY_PATH = Path("identity.pem")
@@ -166,6 +168,377 @@ def public_key_from_did(did: str) -> Ed25519PublicKey:
     if len(decoded) != 34 or decoded[:2] != b"\xed\x01":
         raise ProtocolError("DID is not an Ed25519 did:key")
     return Ed25519PublicKey.from_public_bytes(decoded[2:])
+
+
+# --- FLOP devnet faucet -----------------------------------------------------
+# Free devnet FLOP. Devnet FLOP is a TEST token with no value — it is not
+# testnet or mainnet FLOP, and it is not an airdrop.
+#   Guide:  https://faucet.flop.network/llms.txt
+#   Limits: https://faucet.flop.network/limits
+#   Chain:  https://faucet.flop.network/chain
+#
+# The point of this section: your did:key IS an Ed25519 key, so it already has
+# an SS58 address on the FLOP devnet. You do not need a second wallet — derive
+# the address from the identity you already have and ask the faucet to fund it.
+# Two SEPARATE hosts. faucet.flop.network serves Testnet only; the devnet faucet
+# lives on its own subdomain. Verified 2026-11-25: /limits?network=devnet on the
+# testnet host silently returns testnet data, so the host — not a query param —
+# decides which chain you are asking. /chain is cross-checked before signing.
+FAUCET_HOSTS = {
+    "testnet": "https://faucet.flop.network",
+    "devnet": "https://faucet.devnet.flop.network",
+}
+FAUCET_API = FAUCET_HOSTS["testnet"]
+FAUCET_CHAT_ROOM = "flop-devnet-faucet"        # devnet bot lane
+FAUCET_TESTNET_CHAT_ROOM = "flop-testnet-faucet"
+FAUCET_SS58_FORMAT = 42          # from GET /chain -> ss58Format
+FAUCET_CLIENT_LABEL = "technocore-did-gameplay"
+FAUCET_TIMEOUT = 90.0   # a signed claim waits for finalization; 20s is too short
+
+# Two networks, two different lanes — do not mix them up:
+#   testnet : 10 FLOP per wallet per 24h, SIGNED claim at
+#             POST /v1/testnet/agent-claims. This is the network the FLOP
+#             testnet campaign actually runs on.
+#   devnet  : 25 FLOP per address per 24h, plain POST /fund. Throwaway tokens.
+# An address funded on the agent lane keeps agent rules everywhere afterwards,
+# so on devnet always use POST /fund (25) before any agent-lane request (2).
+FAUCET_NETWORKS = ("testnet", "devnet")
+FAUCET_DEFAULT_NETWORK = "testnet"
+FAUCET_AGENT_CLAIM_PATH = "/v1/testnet/agent-claims"
+# Exactly what the faucet wants signed (see flop.network/llms.txt).
+FAUCET_AGENT_SIGN_TEMPLATE = "flop-faucet-agent/v1|{genesis}|{address}|{nonce}"
+FAUCET_RPC_HTTP = {
+    "testnet": "https://testnet.flop.network",
+    "devnet": "https://rpc.devnet.flop.network",
+}
+SS58_PREIMAGE = b"SS58PRE"
+
+# Two lanes, and the ORDER MATTERS. An address funded on the agent lane keeps
+# the agent rules (2 FLOP, needs on-chain spend before a repeat) on EVERY lane
+# afterwards. So always use the anonymous POST /fund lane (25 FLOP) first.
+FAUCET_ANON_FLOP = 25
+FAUCET_AGENT_FLOP = 2
+
+
+def ss58_address_from_pubkey(pubkey: bytes, fmt: int = FAUCET_SS58_FORMAT) -> str:
+    """SS58 (Substrate address format) for a raw 32-byte public key."""
+    if not isinstance(pubkey, (bytes, bytearray)) or len(pubkey) != 32:
+        raise ProtocolError("public key must be 32 raw bytes")
+    payload = bytes([fmt]) + bytes(pubkey)
+    checksum = hashlib.blake2b(SS58_PREIMAGE + payload, digest_size=64).digest()[:2]
+    return _b58_encode(payload + checksum)
+
+
+def ss58_address_from_did(did: str) -> str:
+    """SS58 address of the SAME Ed25519 key that a did:key names.
+
+    This is the whole trick of the FLOP faucet: no separate wallet, no seed to
+    copy around. The DID already commits to the key the devnet wants.
+    """
+    pk = public_key_from_did(did)
+    raw = pk.public_bytes(
+        serialization.Encoding.Raw, serialization.PublicFormat.Raw
+    )
+    return ss58_address_from_pubkey(raw)
+
+
+def _faucet_request(path: str, body: dict | None = None,
+                    network: str = FAUCET_DEFAULT_NETWORK) -> dict:
+    """GET/POST against ONE network's faucet host."""
+    if not path.startswith("/"):
+        raise ProtocolError("request path must start with '/'")
+    if network not in FAUCET_HOSTS:
+        raise ProtocolError(f"network must be one of {FAUCET_NETWORKS}")
+    headers = {
+        "Accept": "application/json",
+        "User-Agent": f"technocore-agent/{APP_VERSION}",
+    }
+    data = None
+    if body is not None:
+        headers["Content-Type"] = "application/json; charset=utf-8"
+        data = json.dumps(body, ensure_ascii=False, separators=(",", ":")).encode()
+    req = Request(FAUCET_HOSTS[network] + path, data=data, headers=headers)
+    # Reads are retried (the faucet sits behind Cloudflare and occasionally
+    # stalls); writes are NOT — a retried POST can pay twice.
+    attempts = 3 if data is None else 1
+    try:
+        for attempt in range(attempts):
+            try:
+                with urlopen(req, timeout=TIMEOUT) as resp:
+                    raw = _read_limited(resp)
+                    try:
+                        return json.loads(raw.decode("utf-8"))
+                    except (json.JSONDecodeError, UnicodeDecodeError) as e:
+                        raise NetworkError(f"faucet returned invalid JSON: {e}")
+            except (URLError, OSError) as e:
+                if attempt == attempts - 1:
+                    raise
+                time.sleep(1.5 * (attempt + 1))
+    except HTTPError as e:
+        # Refusals are JSON with error/reason/action — keep them readable.
+        detail = e.read(2000).decode("utf-8", errors="replace")
+        try:
+            parsed = json.loads(detail)
+        except (json.JSONDecodeError, ValueError):
+            parsed = None
+        if isinstance(parsed, dict):
+            parsed.setdefault("_httpStatus", e.code)
+            return parsed
+        raise NetworkError(f"faucet HTTP {e.code}: {detail[:200]}")
+    except URLError as e:
+        raise NetworkError(f"network error: {e.reason}")
+    except NetworkError:
+        raise
+    except (OSError, ValueError) as e:
+        raise NetworkError(f"network error: {e}")
+
+
+def faucet_status(network: str = FAUCET_DEFAULT_NETWORK) -> dict:
+    """Live limits + chain identity for ONE network (testnet or devnet)."""
+    if network not in FAUCET_NETWORKS:
+        raise ProtocolError(f"network must be one of {FAUCET_NETWORKS}")
+    limits = _faucet_request("/limits", network=network)
+    chain = _faucet_request("/chain", network=network)
+    served = chain.get("network")
+    if served != network:
+        # The faucet tells you which chain it serves; never sign for a guess.
+        raise NetworkError(
+            f"faucet reports network '{served}' but '{network}' was requested"
+        )
+    faucet = limits.get("faucet") or {}
+    anon = faucet.get("anonymous") or {}
+    agent = faucet.get("agent") or {}
+    daily = faucet.get("dailyCap") or {}
+    return {
+        "network": limits.get("network"),
+        "faucetStatus": faucet.get("status"),
+        "anonymousGrantFlop": anon.get("grantFlop"),
+        "anonymousCooldownSeconds": anon.get("addressCooldownSeconds"),
+        "agentGrantFlop": agent.get("grantFlop"),
+        "agentCooldownSeconds": agent.get("cooldownSeconds"),
+        "agentRolloverRequiresSpend": agent.get("rolloverRequiresSpend"),
+        "dailyRemainingFlop": daily.get("remainingFlop"),
+        "chain": chain.get("chain"),
+        "genesisHash": chain.get("genesisHash"),
+        "ss58Format": chain.get("ss58Format"),
+        "tokenSymbol": chain.get("tokenSymbol"),
+        "rpc": chain.get("rpc"),
+        "technocoreBot": (chain.get("technocoreBot") or {}).get("did"),
+        "claimPath": (faucet.get("agent") or {}).get("claimPath"),
+        "agentRolling24hCapFlop": (faucet.get("agent") or {}).get(
+            "rolling24HourCapFlop"),
+    }
+
+
+def faucet_agent_claim_message(genesis_hash: str, address: str, nonce: str) -> str:
+    """The exact UTF-8 text the Testnet faucet wants signed. No trimming."""
+    return FAUCET_AGENT_SIGN_TEMPLATE.format(
+        genesis=genesis_hash, address=address, nonce=str(nonce)
+    )
+
+
+def faucet_agent_claim(
+    pk: Ed25519PrivateKey,
+    address: str,
+    nonce: str | int | None = None,
+    network: str = "testnet",
+) -> tuple[int, dict]:
+    """Signed agent claim (10 FLOP / 24h on Testnet).
+
+    Repeating a request with the SAME nonce is safe and is the documented way to
+    check an earlier request: it returns the same transaction and never pays
+    twice. A refusal is returned, never retried in a loop.
+    """
+    if network != "testnet":
+        raise ProtocolError("the signed agent-claim lane exists on testnet only")
+    info = faucet_status(network)
+    genesis = info.get("genesisHash")
+    if not genesis:
+        raise NetworkError("faucet /chain did not report a genesis hash")
+    n = str(nonce if nonce is not None else int(time.time() * 1000))
+    if NONCE_PATTERN.fullmatch(n) is None:
+        raise ProtocolError("nonce must be 1-19 ASCII digits")
+    message = faucet_agent_claim_message(genesis, address, n)
+    signature = "0x" + pk.sign(message.encode("utf-8")).hex()
+    status, reply = _faucet_request_full(
+        FAUCET_AGENT_CLAIM_PATH,
+        {"address": address, "nonce": n, "signature": signature},
+        network=network,
+    )
+    return status, {"request": {"address": address, "nonce": n,
+                                "message": message},
+                    "reply": reply}
+
+
+def _faucet_request_full(path: str, body: dict,
+                         network: str = FAUCET_DEFAULT_NETWORK) -> tuple[int, dict]:
+    """POST that also returns the HTTP status (needed for 401 vs 429 vs 5xx)."""
+    if not path.startswith("/"):
+        raise ProtocolError("request path must start with '/'")
+    if network not in FAUCET_HOSTS:
+        raise ProtocolError(f"network must be one of {FAUCET_NETWORKS}")
+    req = Request(
+        FAUCET_HOSTS[network] + path,
+        data=json.dumps(body, ensure_ascii=False, separators=(",", ":")).encode(),
+        headers={"Accept": "application/json",
+                 "Content-Type": "application/json; charset=utf-8",
+                 "User-Agent": f"technocore-agent/{APP_VERSION}"},
+    )
+    try:
+        with urlopen(req, timeout=FAUCET_TIMEOUT) as resp:
+            raw = _read_limited(resp)
+            return resp.status, json.loads(raw.decode("utf-8") or "{}")
+    except HTTPError as e:
+        detail = e.read(4000).decode("utf-8", errors="replace")
+        try:
+            parsed = json.loads(detail)
+        except (json.JSONDecodeError, ValueError):
+            parsed = {"raw": detail[:300]}
+        if not isinstance(parsed, dict):
+            parsed = {"raw": str(parsed)[:300]}
+        parsed.setdefault("_httpStatus", e.code)
+        return e.code, parsed
+    except URLError as e:
+        raise NetworkError(f"network error: {e.reason}")
+    except (OSError, ValueError) as e:
+        raise NetworkError(f"network error: {e}")
+
+
+def faucet_claim(address: str, client: str = FAUCET_CLIENT_LABEL,
+                 network: str = "devnet") -> dict:
+    """POST /fund for one address. NEVER retries — a refusal is final for now.
+
+    Refusals carry a stable `reason` and usually `retryAfterSeconds`. Looping on
+    them is what gets a client throttled, so this returns the refusal to the
+    caller instead of trying again.
+    """
+    if not isinstance(address, str) or not address.strip():
+        raise ProtocolError("address must be a non-empty SS58 string")
+    if network != "devnet":
+        raise ProtocolError(
+            "POST /fund is the devnet lane; testnet wants a signed claim "
+            "(faucet_agent_claim)"
+        )
+    return _faucet_request("/fund", {"address": address.strip(), "client": client},
+                           network=network)
+
+
+def describe_faucet_outcome(result: dict, address: str = "?") -> tuple[bool, str]:
+    """Turn a /fund reply into (funded?, human line). No guessing, no retry.
+
+    The success body carries amount/tier/txHash but not the address, so pass in
+    the address you asked for — otherwise the report reads "funded to ?".
+    """
+    if result.get("success"):
+        return True, (
+            f"funded {result.get('amount')} FLOP to {result.get('address') or address}"
+            f" (tier {result.get('tier', '?')}, tx {result.get('txHash', '?')})"
+        )
+    reason = result.get("reason") or result.get("error") or "unknown"
+    wait = result.get("retryAfterSeconds")
+    action = result.get("action")
+    line = f"NOT funded — reason={reason}"
+    if wait:
+        line += f", retry after {wait}s"
+    if action:
+        line += f", action={action}"
+    return False, line
+
+
+# System.Account storage map: twox128("System") ++ twox128("Account")
+# ++ blake2_128(account_id) ++ account_id. Constant, published in Substrate docs.
+ACCOUNT_STORAGE_PREFIX = ("0x26aa394eea5630e07c48ae0c9558cef7"
+                          "b99d880ec681799c0cf30e8886371da9")
+FLOP_DECIMALS = 18
+
+
+def account_storage_key(ss58: str) -> str:
+    """Storage key of System.Account for an SS58 address (format 42)."""
+    try:
+        raw = _b58_decode(ss58)
+    except (ValueError, IndexError):
+        raise ProtocolError("SS58 address has invalid base58btc data")
+    if len(raw) != 35:
+        raise ProtocolError(
+            f"SS58 must decode to 35 bytes, got {len(raw)} — wrong format prefix?"
+        )
+    account = raw[1:33]
+    digest = hashlib.blake2b(account, digest_size=16).digest()
+    return ACCOUNT_STORAGE_PREFIX + digest.hex() + account.hex()
+
+
+def _rpc_call(rpc_url: str, method: str, params: list, tries: int = 3) -> dict:
+    """Minimal Substrate JSON-RPC over HTTP. Retries only on transport errors."""
+    last = None
+    for attempt in range(tries):
+        try:
+            req = Request(
+                rpc_url,
+                data=json.dumps({"id": 1, "jsonrpc": "2.0",
+                                 "method": method, "params": params}).encode(),
+                headers={"content-type": "application/json",
+                         "user-agent": f"technocore-agent/{APP_VERSION}"},
+            )
+            with urlopen(req, timeout=TIMEOUT) as resp:
+                reply = json.loads(_read_limited(resp).decode("utf-8"))
+        except (URLError, OSError, ValueError, json.JSONDecodeError) as e:
+            last = e
+            time.sleep(1 + attempt)
+            continue
+        if "error" in reply:
+            last = reply["error"]
+            time.sleep(1 + attempt)
+            continue
+        return reply
+    raise NetworkError(f"RPC {method} failed after {tries} tries: {last}")
+
+
+def devnet_balance(ss58: str, network: str = FAUCET_DEFAULT_NETWORK,
+                   rpc_url: str | None = None) -> dict:
+    """FREE / RESERVED / FROZEN balance of an SS58 address on the FLOP devnet.
+
+    Returns {"exists": False} when the account is not on chain yet — which is
+    exactly what a just-requested grant looks like while it is still queued.
+    """
+    if rpc_url is None:
+        if network not in FAUCET_RPC_HTTP:
+            raise ProtocolError(f"network must be one of {FAUCET_NETWORKS}")
+        rpc_url = FAUCET_RPC_HTTP[network]
+    key = account_storage_key(ss58)
+    header = _rpc_call(rpc_url, "chain_getHeader", []).get("result")
+    value = _rpc_call(rpc_url, "state_getStorage", [key]).get("result")
+    out = {
+        "address": ss58,
+        "block": int(header["number"], 16) if header else None,
+        "exists": bool(value),
+    }
+    if not value:
+        return out
+    raw = bytes.fromhex(value[2:] if value.startswith("0x") else value)
+    if len(raw) < 64:
+        raise NetworkError(f"unexpected AccountInfo size: {len(raw)} bytes")
+    scale = 10 ** FLOP_DECIMALS
+    out.update({
+        "nonce": int.from_bytes(raw[0:4], "little"),
+        "providers": int.from_bytes(raw[8:12], "little"),
+        "free": int.from_bytes(raw[16:32], "little") / scale,
+        "reserved": int.from_bytes(raw[32:48], "little") / scale,
+        "frozen": int.from_bytes(raw[48:64], "little") / scale,
+    })
+    return out
+
+
+def faucet_chat_request(did: str, ss58: str, nonce: int | None = None) -> dict:
+    """Post `!faucet request <ss58> <nonce>` to the Technocore faucet room.
+
+    When <ss58> is the address of the SAME did:key, the bot submits the grant
+    for you (2 FLOP, agent rules). For any other address it answers with an
+    unsigned challenge you must sign with THAT account's key — this helper does
+    not do that, because it would mean holding someone else's key.
+    """
+    n = int(nonce if nonce is not None else time.time() * 1000)
+    text = f"!faucet request {ss58} {n}"
+    return {"room": FAUCET_CHAT_ROOM, "nonce": n, "text": text, "did": did}
 
 
 # ---------------------------------------------------------------------------
@@ -684,6 +1057,55 @@ def main(argv=None) -> int:
     read.add_argument("--limit", type=int, default=50)
     read.add_argument("--since", type=int)
 
+    faucet = sub.add_parser(
+        "faucet",
+        help="free devnet FLOP for your DID's own SS58 address",
+        description=(
+            "Derive the SS58 address of your did:key's Ed25519 key and ask the "
+            "FLOP devnet faucet to fund it. Devnet FLOP is a test token with no "
+            "value — not testnet or mainnet FLOP, not an airdrop."
+        ),
+    )
+    faucet.add_argument("--network", choices=FAUCET_NETWORKS,
+                        default=FAUCET_DEFAULT_NETWORK,
+                        help="testnet = 10 FLOP signed claim (default); "
+                             "devnet = 25 FLOP plain POST")
+    faucet.add_argument("--nonce", default=None,
+                        help="claim nonce (1-19 digits). Repeat the SAME nonce to "
+                             "re-check a request without paying twice")
+    faucet.add_argument("--claim", action="store_true",
+                        help="actually claim (default: show address + limits only)")
+    faucet.add_argument("--chat", action="store_true",
+                        help="also post '!faucet request' to the flop-devnet-faucet room "
+                             "(2 FLOP agent lane — see the warning)")
+    faucet.add_argument("--dry-run", action="store_true",
+                        help="print exactly what would be sent, send nothing")
+    faucet.add_argument("--json", action="store_true", help="machine-readable output")
+    faucet.add_argument("--client", default=FAUCET_CLIENT_LABEL,
+                        help="telemetry label only; never changes limits or amount")
+    faucet.add_argument("--key", type=Path, default=None)
+    faucet.add_argument("--passphrase-file", type=Path,
+                        help="read passphrase from FILE (headless/cron). WARNING: plaintext on disk — chmod 600, never commit!")
+
+    bal = sub.add_parser(
+        "balance",
+        help="devnet FLOP balance of your DID's SS58 (or any SS58)",
+        description=(
+            "Read-only. Shows FREE / RESERVED / FROZEN on the FLOP devnet, so you "
+            "can confirm a faucet grant actually landed instead of trusting a "
+            "pending reply."
+        ),
+    )
+    bal.add_argument("address", nargs="?", default=None,
+                     help="SS58 address (default: the one derived from your DID)")
+    bal.add_argument("--network", choices=FAUCET_NETWORKS,
+                     default=FAUCET_DEFAULT_NETWORK,
+                     help="which chain to read (default: testnet)")
+    bal.add_argument("--json", action="store_true", help="machine-readable output")
+    bal.add_argument("--key", type=Path, default=None)
+    bal.add_argument("--passphrase-file", type=Path,
+                     help="read passphrase from FILE (headless/cron). WARNING: plaintext on disk — chmod 600, never commit!")
+
     proof = sub.add_parser("proof", help="sign a public contribution revision (proof v2)")
     proof.add_argument("artifact_url")
     proof.add_argument("commit")
@@ -758,6 +1180,139 @@ def main(argv=None) -> int:
         elif args.command == "read":
             result = read_room(args.room, limit=args.limit, since=args.since)
             print(json.dumps(result, indent=2))
+        elif args.command == "faucet":
+            key_path = resolve_key_path(args.key)
+            pk = load_identity(key_path, passphrase=pphrase)
+            did = did_from_private_key(pk)
+            address = ss58_address_from_did(did)
+            network = args.network
+
+            if not args.claim:
+                # Status only: show BOTH networks, because they are not the same
+                # faucet and mixing them up is the usual mistake.
+                rows = []
+                for net in FAUCET_NETWORKS:
+                    try:
+                        rows.append((net, faucet_status(net)))
+                    except (ProtocolError, NetworkError) as e:
+                        rows.append((net, {"error": str(e)}))
+                if args.json:
+                    print(json.dumps({"did": did, "ss58": address,
+                                      "networks": dict(rows)}, indent=2))
+                else:
+                    print(f"DID            {did}")
+                    print(f"SS58 (own key) {address}")
+                    print()
+                    for net, info in rows:
+                        if info.get("error"):
+                            print(f"{net:<8} ERROR {info['error']}")
+                            continue
+                        print(f"{net:<8} {info.get('faucetStatus')} · "
+                              f"{info.get('chain')} · grant "
+                              f"{info.get('anonymousGrantFlop')} FLOP anon / "
+                              f"{info.get('agentGrantFlop')} FLOP agent")
+                    print()
+                    print("Claim Testnet (10 FLOP, signed):  faucet --claim")
+                    print("Claim Devnet  (25 FLOP, POST):    faucet --claim --network devnet")
+                    print()
+                    print("Why your DID has an address: the did:key IS an Ed25519 key, "
+                          "and SS58 is that key plus a checksum. No second wallet needed.")
+            elif network == "testnet":
+                if args.dry_run:
+                    info = faucet_status(network)
+                    n = args.nonce or str(int(time.time() * 1000))
+                    msg = faucet_agent_claim_message(info["genesisHash"], address, n)
+                    print(json.dumps({
+                        "network": network, "did": did, "ss58": address,
+                        "nonce": n, "message_to_sign": msg,
+                        "wouldPost": {"url": FAUCET_HOSTS[network] + FAUCET_AGENT_CLAIM_PATH,
+                                      "body": {"address": address, "nonce": n,
+                                               "signature": "0x<ed25519 of the message>"}},
+                    }, indent=2))
+                    print("dry run: nothing was sent.", file=sys.stderr)
+                else:
+                    status, out = faucet_agent_claim(
+                        pk, address, nonce=args.nonce, network=network)
+                    reply = out["reply"]
+                    ok = bool(reply.get("success"))
+                    if args.json:
+                        print(json.dumps({"network": network, "httpStatus": status,
+                                          **out}, indent=2))
+                    else:
+                        print(f"network  {network}")
+                        print(f"DID      {did}")
+                        print(f"SS58     {address}")
+                        print(f"nonce    {out['request']['nonce']}")
+                        if ok:
+                            print(f"result   funded {reply.get('amount')} FLOP · "
+                                  f"tx {reply.get('txHash')} · "
+                                  f"status {reply.get('status')}")
+                        else:
+                            why = (reply.get("error") or reply.get("reason")
+                                   or reply.get("raw")
+                                   or f"unrecognised reply (HTTP {status})")
+                            line = f"result   NOT funded — {why}"
+                            if reply.get("reason") and reply.get("reason") not in str(why):
+                                line += f" (reason={reply['reason']})"
+                            print(line)
+                    if not ok:
+                        print(
+                            "Not retried on purpose. Repeating the SAME nonce is the "
+                            "documented way to re-check a request; a new nonce only "
+                            "after the previous one reached a final result.",
+                            file=sys.stderr)
+                        return 1
+            else:
+                # Devnet: plain POST /fund, 25 FLOP, no signature.
+                if args.dry_run:
+                    info = faucet_status(network)
+                    print(json.dumps({
+                        "network": network, "did": did, "ss58": address,
+                        "faucetStatus": info.get("faucetStatus"),
+                        "wouldPost": {"url": f"{FAUCET_HOSTS[network]}/fund",
+                                      "body": {"address": address,
+                                               "client": args.client}},
+                    }, indent=2))
+                    print("dry run: nothing was sent.", file=sys.stderr)
+                else:
+                    if faucet_status(network).get("faucetStatus") != "open":
+                        raise NetworkError("devnet faucet is not open right now")
+                    result = faucet_claim(address, client=args.client,
+                                          network=network)
+                    ok, line = describe_faucet_outcome(result, address)
+                    if args.json:
+                        print(json.dumps({"network": network, "funded": ok,
+                                          "reply": result}, indent=2))
+                    else:
+                        print(f"network  {network}")
+                        print(f"DID      {did}")
+                        print(f"SS58     {address}")
+                        print(f"result   {line}")
+                    if not ok:
+                        print(
+                            "Not retried on purpose: a refusal is final until the "
+                            "stated wait passes.", file=sys.stderr)
+                        return 1
+        elif args.command == "balance":
+            address = args.address
+            if address is None:
+                pk = load_identity(resolve_key_path(args.key), passphrase=pphrase)
+                address = ss58_address_from_did(did_from_private_key(pk))
+            info = devnet_balance(address, network=args.network)
+            if args.json:
+                print(json.dumps(info, indent=2))
+            else:
+                print(f"address  {info['address']}")
+                print(f"network  {args.network}")
+                print(f"block    {info.get('block')}")
+                if not info["exists"]:
+                    print("balance  akun belum ada di chain — grant biasanya masih "
+                          "antre di faucet (cek /limits -> pendingGrants)")
+                else:
+                    print(f"FREE     {info['free']} FLOP")
+                    print(f"RESERVED {info['reserved']} FLOP")
+                    print(f"FROZEN   {info['frozen']} FLOP")
+                    print(f"nonce    {info['nonce']} · providers {info['providers']}")
         elif args.command == "proof":
             key_path = resolve_key_path(args.key)
             pk = load_identity(key_path, passphrase=pphrase)

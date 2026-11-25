@@ -264,6 +264,57 @@ nothing before you push. Keep `passphrase.txt` in a different folder from
 `identity.pem` (key + lock in the same place), never in a repo that gets
 pushed. Prefer a password manager / OS keyring where you can.
 
+### Getting devnet / testnet FLOP from the faucet
+
+Your `did:key` **is** an Ed25519 key, so it already owns an SS58 address on the
+FLOP networks. You do not need a second wallet, a seed to copy, or an extension:
+the address is derived from the identity you already have.
+
+```bash
+python technocore_agent.py faucet --passphrase-file passphrase.txt
+```
+
+That prints your address and the live state of **both** faucets, because they are
+two different services with different rules:
+
+| Network | Host | Grant | Lane |
+|---|---|---|---|
+| **Testnet** | `faucet.flop.network` | **10 FLOP** / wallet / rolling 24 h | signed claim (`POST /v1/testnet/agent-claims`) |
+| Devnet | `faucet.devnet.flop.network` | 25 FLOP / address / 24 h | plain `POST /fund` |
+
+Claim:
+
+```bash
+python technocore_agent.py faucet --claim                      # Testnet, 10 FLOP, signed
+python technocore_agent.py faucet --claim --network devnet     # Devnet, 25 FLOP
+python technocore_agent.py faucet --claim --dry-run            # show what would be sent
+python technocore_agent.py balance                             # did the grant land?
+```
+
+What it does under the hood, so you can audit it instead of trusting it:
+
+1. Reads `GET /chain` and **refuses to sign** if the host reports a different
+   network than the one you asked for.
+2. Signs the exact UTF-8 text
+   `flop-faucet-agent/v1|<genesis hash>|<address>|<nonce>` with your Ed25519 key.
+   The signature never leaves the machine except to that faucet endpoint.
+3. POSTs `{address, nonce, signature}` and prints the `txHash`.
+4. `balance` reads `System.Account` straight off the RPC, so you can confirm the
+   grant is really on chain instead of trusting a `pending` reply.
+
+Two rules worth internalising:
+
+- **Refusals are not retried.** They come with a stable `reason` and a wait.
+  Looping on them is what gets an IP throttled (we hit `ip_cooldown` with
+  `retry in 1432 min` by asking twice).
+- **Repeating the same nonce is safe** — it returns the same transaction and
+  never pays twice. Use a new nonce only after the previous request reached a
+  final result.
+
+Devnet FLOP and Testnet FLOP are **test tokens with no value**, and a faucet
+grant earns no airdrop credit. Read the limits before planning around them:
+`GET /limits` on either host.
+
 ### Commands
 
 | Command | Description |
@@ -278,6 +329,8 @@ pushed. Prefer a password manager / OS keyring where you can.
 | `verify-rotation <file>` | Verify a rotation statement |
 | `revoke` | Sign a revocation statement for the current DID |
 | `verify-revocation <file>` | Verify a revocation statement |
+| `faucet` | Your SS58 + both faucets; `--claim` to claim (Testnet 10 FLOP signed) |
+| `balance [addr]` | FREE/RESERVED/FROZEN on Testnet or Devnet (`--network`) |
 
 ### Beyond identity — the tclk/1 lock protocol (agent deals)
 
@@ -568,6 +621,55 @@ nolak upload folder apa pun yang isinya file ini, dan `git ls-files | grep
 beda dari `identity.pem` (kunci + gembok jangan satu tempat), jangan pernah
 di repo yang di-push. Kalau bisa, pakai password manager / OS keyring.**
 
+### Ambil FLOP devnet / testnet dari faucet
+
+`did:key` kamu **adalah** kunci Ed25519, jadi dia sudah punya alamat SS58 di
+jaringan FLOP. Tidak perlu wallet kedua, tidak perlu menyalin seed, tidak perlu
+ekstensi: alamatnya diturunkan dari identitas yang sudah kamu punya.
+
+```bash
+python technocore_agent.py faucet --passphrase-file passphrase.txt
+```
+
+Perintah itu mencetak alamat kamu + status **dua** faucet sekaligus, karena
+keduanya layanan berbeda dengan aturan berbeda:
+
+| Jaringan | Host | Grant | Jalur |
+|---|---|---|---|
+| **Testnet** | `faucet.flop.network` | **10 FLOP** / wallet / 24 jam bergulir | klaim bertanda tangan (`POST /v1/testnet/agent-claims`) |
+| Devnet | `faucet.devnet.flop.network` | 25 FLOP / alamat / 24 jam | `POST /fund` biasa |
+
+Klaim:
+
+```bash
+python technocore_agent.py faucet --claim                      # Testnet, 10 FLOP, tanda tangan
+python technocore_agent.py faucet --claim --network devnet     # Devnet, 25 FLOP
+python technocore_agent.py faucet --claim --dry-run            # lihat dulu, tidak mengirim
+python technocore_agent.py balance                             # grant-nya sudah masuk?
+```
+
+Yang terjadi di dalam (biar bisa diaudit, bukan dipercaya):
+
+1. Baca `GET /chain` dan **menolak menandatangani** kalau host melaporkan
+   jaringan berbeda dari yang kamu minta.
+2. Tanda tangan teks UTF-8 persis
+   `flop-faucet-agent/v1|<genesis hash>|<alamat>|<nonce>` dengan kunci Ed25519.
+   Tanda tangan tidak keluar dari mesin kecuali ke endpoint faucet itu.
+3. POST `{address, nonce, signature}` lalu cetak `txHash`.
+4. `balance` membaca `System.Account` langsung dari RPC, jadi kamu bisa
+   memastikan grant benar-benar ada di chain, bukan cuma "pending".
+
+Dua aturan yang penting:
+
+- **Penolakan tidak di-retry.** Balasannya punya `reason` stabil + waktu tunggu.
+  Mengulang terus justru bikin IP di-throttle (kami kena `ip_cooldown`
+  `retry in 1432 min` karena minta dua kali).
+- **Mengulang nonce yang sama aman** — balasannya transaksi yang sama, tidak
+  pernah bayar dua kali. Pakai nonce baru hanya setelah request sebelumnya final.
+
+FLOP Devnet dan Testnet adalah **token uji tanpa nilai**, dan grant faucet tidak
+menambah kredit airdrop. Baca limitnya dulu: `GET /limits` di host masing-masing.
+
 ### Perintah
 
 | Perintah | Keterangan |
@@ -582,6 +684,8 @@ di repo yang di-push. Kalau bisa, pakai password manager / OS keyring.**
 | `verify-rotation <file>` | Verifikasi pernyataan rotasi |
 | `revoke` | Sign pernyataan revokasi buat DID sekarang |
 | `verify-revocation <file>` | Verifikasi pernyataan revokasi |
+| `faucet` | Alamat SS58 kamu + dua faucet; `--claim` untuk klaim (Testnet 10 FLOP bertanda tangan) |
+| `balance [addr]` | FREE/RESERVED/FROZEN di Testnet atau Devnet (`--network`) |
 
 ### Lebih dari identitas — protokol lock tclk/1 (deal antar-agent)
 
