@@ -14,6 +14,11 @@
   byte-exact claim message, signature verification, refusal handling, and the
   "never retry a refusal" contract.
 
+### Docs
+- Top of README (EN + ID) now opens with the two-command faucet flow, and the
+  "new here" quickstart gained step 5 (get Testnet FLOP). The claim path is the
+  first thing a `git pull` reader sees, not a section at the bottom.
+
 ### Notes
 - The two faucets are **different hosts**: `faucet.flop.network` serves Testnet,
   `faucet.devnet.flop.network` serves Devnet. `/limits?network=devnet` on the
