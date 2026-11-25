@@ -24,6 +24,10 @@ you have a cryptographically verifiable agent identity.
 > python technocore_agent.py balance            # confirm it landed on chain
 > ```
 > Details, rules and the two-network difference: [Getting devnet / testnet FLOP](#getting-devnet--testnet-flop-from-the-faucet).
+>
+> **Already installed before v1.3.0?** You only need `git pull` — see
+> [UPDATE.md](UPDATE.md). **Never re-run `init`**: that is the one command that
+> can lose your DID.
 
 ### 👋 New here? Start with these 6 steps
 
@@ -392,6 +396,10 @@ kriptografis.
 > python technocore_agent.py balance            # pastikan benar-benar masuk
 > ```
 > Detail, aturan, dan beda dua jaringan: [Ambil FLOP devnet / testnet](#ambil-flop-devnet--testnet-dari-faucet).
+>
+> **Sudah install sebelum v1.3.0?** Cukup `git pull` — lihat
+> [UPDATE.md](UPDATE.md). **Jangan pernah jalankan `init` lagi**: itu satu-satunya
+> perintah yang bisa menghilangkan DID lu.
 
 ### 👋 Baru pertama kali? Ikuti 6 langkah ini
 
