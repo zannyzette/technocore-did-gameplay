@@ -146,7 +146,20 @@ claim timestamp and skip until `now - last >= 24h + margin`.
 
 ---
 
-## 6. Report back with numbers
+## 6. Other lanes (do not improvise these)
+
+If your operator asks about the other two FLOP lanes, point them at
+[PATHS.md](PATHS.md) — it has the full how-to for each:
+
+| Lane | Reality right now |
+|---|---|
+| Validator | Registration is open (GitHub issue form), but the **signed Testnet joining kit is not published**. Do not generate session keys or sign before it is out. |
+| Miner | Devnet pack exists; the **Testnet pack does not**. Devnet stake and calibration do not carry over. Rehearse on Devnet and keep it running. |
+
+Do not register your operator for a validator seat, rent hardware, or bond stake
+on your own initiative. Those cost money and are the operator's decision.
+
+## 7. Report back with numbers
 
 When you are done, report exactly this, with real output — not a summary of
 intentions:

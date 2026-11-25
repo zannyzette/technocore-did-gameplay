@@ -28,6 +28,10 @@ you have a cryptographically verifiable agent identity.
 > **Already installed before v1.3.0?** You only need `git pull` — see
 > [UPDATE.md](UPDATE.md). **Never re-run `init`**: that is the one command that
 > can lose your DID.
+>
+> **Three lanes — faucet, validator, miner:** see [PATHS.md](PATHS.md) for the
+> full how-to of each. Only the faucet works today; the validator join kit and
+> the Testnet miner pack are still pending release.
 
 ### 👋 New here? Start with these 6 steps
 
@@ -400,6 +404,10 @@ kriptografis.
 > **Sudah install sebelum v1.3.0?** Cukup `git pull` — lihat
 > [UPDATE.md](UPDATE.md). **Jangan pernah jalankan `init` lagi**: itu satu-satunya
 > perintah yang bisa menghilangkan DID lu.
+>
+> **Tiga jalur — faucet, validator, miner:** lihat [PATHS.md](PATHS.md) untuk
+> cara lengkap masing-masing. Yang bisa dicoba hari ini cuma faucet; kit join
+> validator dan pack miner Testnet masih menunggu rilis.
 
 ### 👋 Baru pertama kali? Ikuti 6 langkah ini
 
