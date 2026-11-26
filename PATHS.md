@@ -99,6 +99,26 @@ If you see 401, run `faucet --check` — it validates the address locally.
 | A new nonce only after the previous request is final | otherwise you cannot tell which one paid |
 | A repeat grant may need on-chain spend | `rolloverRequiresSpend: true` → `agent_spend_missing` until the previous grant is used |
 
+### Can you spend the 10 FLOP yet? (checked 26 Nov 2026 — no)
+
+The Testnet **gateway is now public** (`https://gateway.testnet.flop.network`)
+and the first model is registered on chain (**Qwen3-8B**), but there is still
+nothing serving it:
+
+```bash
+curl -s https://gateway.testnet.flop.network/health | python3 -m json.tool
+#   "connected": false
+#   "dependencies": { "catalog": { "ok": false, "error": "no_live_offers" } }
+curl -s https://gateway.testnet.flop.network/v1/models
+#   {"object":"list","data":[],"total_count":0}
+```
+
+`no_live_offers` means no miner is serving a model yet, so inference cannot be
+bought and the grant cannot be spent. FLOP's own roadmap says *"Next: calibration
+oracle and the first Testnet miners."* Until that lands, a second grant may be
+refused with `agent_spend_missing` — that is the faucet enforcing
+`rolloverRequiresSpend`, not a problem with your install.
+
 ### Verify it yourself (do not trust screenshots)
 
 ```bash
@@ -192,6 +212,11 @@ miner pack or supported Devnet-to-Testnet upgrade command at this opening. Wait
 for the Operator Hub to list the signed Testnet pack."* Devnet registration,
 stake and calibration **do not carry over** to Testnet.
 
+Day-3 status (26 Nov 2026): the first model **Qwen3-8B** is registered and
+verified on Testnet, but `flop miner skus` still returns `[]` and the gateway
+reports `no_live_offers` — the calibration oracle and the first Testnet miners
+are FLOP's stated next step. A GPU is not useful on Testnet until that opens.
+
 So the path today is: rehearse on **Devnet**, keep it running.
 
 ### Devnet pack
@@ -266,6 +291,10 @@ python technocore_agent.py balance
 - **`401` bukan tanda cooldown.** Body yang kurang/kunci salah ditolak sebelum
   sempat dicek IP-nya. Jalankan `faucet --check` dulu: dia memvalidasi alamat
   secara lokal tanpa mengirim apa pun.
+- **Belum bisa dibelanjakan (26 Nov 2026).** Gateway testnet sudah publik dan
+  Qwen3-8B sudah terdaftar di chain, tapi `/v1/models` masih kosong dan
+  `/health` bilang `catalog: no_live_offers` — belum ada miner yang melayani.
+  Jadi grant kedua bisa ditolak `agent_spend_missing` sampai miner testnet hidup.
 
 Test FLOP = token uji tanpa nilai. Earning baru mulai di activation block resmi;
 aktivitas sebelumnya 0 dan tanpa backfill.
