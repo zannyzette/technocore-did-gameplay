@@ -113,11 +113,29 @@ curl -s https://gateway.testnet.flop.network/v1/models
 #   {"object":"list","data":[],"total_count":0}
 ```
 
-`no_live_offers` means no miner is serving a model yet, so inference cannot be
-bought and the grant cannot be spent. FLOP's own roadmap says *"Next: calibration
-oracle and the first Testnet miners."* Until that lands, a second grant may be
-refused with `agent_spend_missing` — that is the faucet enforcing
-`rolloverRequiresSpend`, not a problem with your install.
+**Update 26 Nov, later the same day:** the catalog opened — `/v1/models` now lists
+`qwen/qwen3-8b` and `qwen/qwen3-14b`, and `/health` reports `catalog: ok`. But you
+still cannot buy anything, because there is **no way to obtain an API key**:
+
+```bash
+curl -s "https://gateway.testnet.flop.network/v1/enroll/wallet/challenge?address=<your-ss58>"
+#   -> 404  (route not mounted on Testnet)
+curl -sX POST https://gateway.testnet.flop.network/v1/chat/completions \
+  -H 'content-type: application/json' \
+  -d '{"model":"qwen/qwen3-8b","messages":[{"role":"user","content":"hi"}]}'
+#   -> 402 {"error":"payment_required","price":1,"asset":"FLOP",
+#           "instructions":"Direct public payment-proof settlement is not enabled.
+#                           Use a funded FLOP API key."}
+```
+
+So the gateway is up and models are served, but both routes to a credential are
+closed: enrollment returns 404, and direct payment-proof settlement is disabled.
+`flop agent credential` is Devnet-only and refuses `--network testnet`.
+
+Result: the 10 FLOP grant still cannot be spent, so a second claim is refused with
+`agent_spend_missing` — the faucet enforcing `rolloverRequiresSpend`, not a broken
+install. This is the current, verified state; it will change when FLOP opens
+enrollment.
 
 ### Verify it yourself (do not trust screenshots)
 
